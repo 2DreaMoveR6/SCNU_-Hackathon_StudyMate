@@ -392,6 +392,31 @@ const server = http.createServer((req, res) => {
   const matchedOrigin = resolveMatchingOrigin(requestOrigin);
   const isApiRoute = req.url.startsWith('/api/');
 
+  // Handle /api/stt: this endpoint is strictly a WebSocket upgrade route.
+  // If a client sends an HTTP Upgrade request, let it bypass the HTTP request handler
+  // so server.on('upgrade') performs the 101 Switching Protocols handshake.
+  // If a plain HTTP request hits /api/stt, respond with 426 Upgrade Required.
+  if (req.url.split('?')[0] === '/api/stt') {
+    if (String(req.headers.upgrade || '').toLowerCase() === 'websocket') {
+      return;
+    }
+    const headers = {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Upgrade': 'websocket',
+      'Connection': 'Upgrade'
+    };
+    if (matchedOrigin) {
+      headers['Access-Control-Allow-Origin'] = matchedOrigin;
+      headers['Vary'] = 'Origin';
+    }
+    res.writeHead(426, headers);
+    res.end(JSON.stringify({
+      error: 'upgrade-required',
+      message: 'This endpoint only accepts WebSocket connections.'
+    }));
+    return;
+  }
+
   // Handle CORS preflight for API routes
   if (req.method === 'OPTIONS' && isApiRoute) {
     if (matchedOrigin) {

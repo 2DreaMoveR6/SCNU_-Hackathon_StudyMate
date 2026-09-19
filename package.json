@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "build": "node scripts/build.js",
     "start": "node server.js",
     "check": "node --check server.js && node --check src/app.js && node --check src/services/index.js",
     "test:schedule": "node scripts/test-schedule-date.mjs"
