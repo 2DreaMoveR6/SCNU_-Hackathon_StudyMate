@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 const sourcePath = new URL('../src/services/index.js', import.meta.url);
 const serviceSource = readFileSync(sourcePath, 'utf8');
-const services = await import(`data:text/javascript;base64,${Buffer.from(serviceSource).toString('base64')}`);
+const services = await import(pathToFileURL(sourcePath.pathname).href);
 const reference = '2026-09-19T10:00:00+09:00';
 const resolve = text => services.normalizeScheduleDate(text, reference);
 

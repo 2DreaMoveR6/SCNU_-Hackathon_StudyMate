@@ -1,4 +1,5 @@
 // Shared service contracts. Provider-specific credentials always stay outside the browser.
+import { getHttpApiUrl, getWebSocketApiUrl } from './config.js';
 export class StudentService { async getProfile() { throw new Error('Not implemented'); } }
 export class MockStudentAdapter extends StudentService { constructor(student) { super(); this.student = student; } async getProfile() { return this.student; } }
 export class CourseService { async list() { throw new Error('Course service is not configured.'); } async save() { throw new Error('Course service is not configured.'); } }
@@ -46,7 +47,7 @@ export class IndexedDbAudioStorage extends AudioStorage {
 
 export class SpeechToTextService { async startStream(_options) { throw new Error('Speech-to-text adapter is not configured.'); } stopStream() {} }
 export class GoogleSpeechToTextAdapter extends SpeechToTextService {
-  constructor({ endpoint } = {}) { super(); this.endpoint = endpoint || `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/stt`; this.active = false; this.reconnects = 0; this.bytesSent = 0; this.chunkCount = 0; this.duplicateChunks = 0; this.pendingChunks = []; this.sentChunks = new WeakSet(); this.lastSend = Promise.resolve(); this.streamSequence = 0; this.streamBaseAudioOffsetMs = null; }
+  constructor({ endpoint } = {}) { super(); this.endpoint = endpoint || getWebSocketApiUrl('/api/stt'); this.active = false; this.reconnects = 0; this.bytesSent = 0; this.chunkCount = 0; this.duplicateChunks = 0; this.pendingChunks = []; this.sentChunks = new WeakSet(); this.lastSend = Promise.resolve(); this.streamSequence = 0; this.streamBaseAudioOffsetMs = null; }
   async startStream({ onInterim, onFinal, onStart, onEnd, onError, onDebug, onStreamAudioBase, audioConfig = {} }) {
     this.callbacks = { onInterim, onFinal, onStart, onEnd, onError, onDebug, onStreamAudioBase }; this.audioConfig = audioConfig; this.active = true; this.reconnects = 0; this.bytesSent = 0; this.chunkCount = 0; this.duplicateChunks = 0; this.pendingChunks = []; this.sentChunks = new WeakSet(); this.lastSend = Promise.resolve(); this.streamSequence = 0; this.streamBaseAudioOffsetMs = null; await this.connect();
   }
@@ -120,7 +121,7 @@ export class BrowserSpeechRecognitionAdapter extends SpeechToTextService {
 
 export class TranslationService { async translate(_text, _language, _glossary, _context) { throw new Error('Translation adapter is not configured.'); } }
 export class GeminiTranslationAdapter extends TranslationService {
-  constructor({ endpoint = '/api/translate' } = {}) { super(); this.endpoint = endpoint; }
+  constructor({ endpoint } = {}) { super(); this.endpoint = endpoint || getHttpApiUrl('/api/translate'); }
   async translate(text, targetLanguage, glossary = [], context = {}) {
     const startedAt = performance.now();
     const timing = { geminiRequestStartedAt: startedAt, geminiResponseReceivedAt: null, responseParsedAt: null };
@@ -257,7 +258,7 @@ function validateSmartNotePayload(note, language) {
   for (const quiz of note.quizzes) { const options = Array.isArray(quiz.options) ? quiz.options : []; const languageItems = quiz.type === 'OX' ? [quiz.question, quiz.explanation] : [quiz.question, quiz.explanation, ...options]; if (!hasExpectedLanguage(quiz.question, language) || !hasExpectedLanguage(quiz.explanation, language) || !languageItems.every(item => hasExpectedLanguage(item, language)) || (quiz.type === 'OX' ? options.length !== 2 : options.length !== 4) || new Set(options).size !== options.length || !options.includes(quiz.answer)) throw Object.assign(new Error('Smart Note quiz validation failed.'), { code: 'invalid-smart-note' }); }
 }
 export class GeminiSmartNoteGenerator extends NoteGenerator {
-  constructor({ endpoint = '/api/smart-note' } = {}) { super(); this.endpoint = endpoint; }
+  constructor({ endpoint } = {}) { super(); this.endpoint = endpoint || getHttpApiUrl('/api/smart-note'); }
   async generate({ lecture, transcript, student, language, glossary = [] }) {
     const timing = { geminiRequestStartedAt: performance.now(), geminiResponseReceivedAt: null, responseParsedAt: null };
     let response;
@@ -383,7 +384,7 @@ export function extractLocalScheduleCandidates(transcript = [], context = {}) {
 }
 export class TranscriptScheduleExtractor extends ScheduleExtractor { async extract(transcript = [], context = {}) { return extractLocalScheduleCandidates(transcript, context); } }
 export class GeminiScheduleExtractor extends ScheduleExtractor {
-  constructor({ endpoint = '/api/schedule-extract' } = {}) { super(); this.endpoint = endpoint; }
+  constructor({ endpoint } = {}) { super(); this.endpoint = endpoint || getHttpApiUrl('/api/schedule-extract'); }
   async extract(transcript = [], context = {}) { return extractLocalScheduleCandidates(transcript, context); }
 }
 export class MockScheduleExtractor extends ScheduleExtractor {
@@ -413,7 +414,7 @@ export class MockChatAdapter extends ChatService {
 
 export class PublicOpportunityService { async search() { throw new Error('Public opportunity service is not configured.'); } }
 export class YouthPolicyAdapter extends PublicOpportunityService {
-  constructor({ endpoint = '/api/opportunities' } = {}) { super(); this.endpoint = endpoint; }
+  constructor({ endpoint } = {}) { super(); this.endpoint = endpoint || getHttpApiUrl('/api/opportunities'); }
   async search({ query = '' } = {}) {
     const url = new URL(this.endpoint, location.origin); if (query) url.searchParams.set('query', query);
     let response; try { response = await fetch(url); } catch (_) { throw Object.assign(new Error('Public-data network request failed.'), { code: 'network' }); }

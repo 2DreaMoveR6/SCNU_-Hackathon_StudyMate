@@ -19,6 +19,31 @@ function loadLocalEnv() {
 }
 loadLocalEnv();
 
+function getAllowedOrigins() {
+  const custom = (process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(origin => origin.trim().toLowerCase())
+    .filter(Boolean);
+  return new Set([
+    'http://localhost:4173',
+    'http://127.0.0.1:4173',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    ...custom
+  ]);
+}
+
+function resolveMatchingOrigin(requestOrigin) {
+  if (!requestOrigin) return null;
+  const normalized = String(requestOrigin).trim().replace(/\/+$/, '').toLowerCase();
+  const allowed = getAllowedOrigins();
+  if (allowed.has(normalized)) return requestOrigin;
+  for (const pattern of allowed) {
+    if (pattern.startsWith('*.') && normalized.endsWith(pattern.slice(1))) return requestOrigin;
+  }
+  return null;
+}
+
 // Some local launch environments inject a placeholder proxy at 127.0.0.1:9.
 // It is not a listening proxy and grpc-js honours it, preventing Google STT
 // from establishing its HTTP/2 stream. Remove only that known-invalid value;
@@ -37,8 +62,13 @@ const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const geminiLocation = process.env.GOOGLE_CLOUD_LOCATION || 'global';
 let geminiClient;
 
-function sendJson(res, status, payload) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+function sendJson(res, status, payload, corsOrigin = null) {
+  const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
+  if (corsOrigin) {
+    headers['Access-Control-Allow-Origin'] = corsOrigin;
+    headers['Vary'] = 'Origin';
+  }
+  res.writeHead(status, headers);
   res.end(JSON.stringify(payload));
 }
 function readAdcQuotaProject() {
@@ -358,31 +388,60 @@ async function listYouthPolicies() {
   const value = { opportunities, retrievedAt: new Date().toISOString(), cache: 'miss' }; youthPolicyCache.set(cacheKey, { createdAt: Date.now(), value }); return value;
 }
 const server = http.createServer((req, res) => {
+  const requestOrigin = req.headers.origin;
+  const matchedOrigin = resolveMatchingOrigin(requestOrigin);
+  const isApiRoute = req.url.startsWith('/api/');
+
+  // Handle CORS preflight for API routes
+  if (req.method === 'OPTIONS' && isApiRoute) {
+    if (matchedOrigin) {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': matchedOrigin,
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Max-Age': '86400',
+        'Vary': 'Origin'
+      });
+      res.end();
+      return;
+    }
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Origin not allowed');
+    return;
+  }
+
+  // Reject unauthorized cross-origin API requests if origin is present
+  if (isApiRoute && requestOrigin && !matchedOrigin) {
+    res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: 'cors-forbidden', message: 'Origin is not allowed by CORS policy.' }));
+    return;
+  }
+
   if (req.method === 'POST' && req.url.split('?')[0] === '/api/translate') {
-    readJsonBody(req).then(body => Array.isArray(body.segments) ? translateSegmentsWithGemini(body) : translateWithGemini(body)).then(result => sendJson(res, 200, result)).catch(error => {
+    readJsonBody(req).then(body => Array.isArray(body.segments) ? translateSegmentsWithGemini(body) : translateWithGemini(body)).then(result => sendJson(res, 200, result, matchedOrigin)).catch(error => {
       const failure = error.code === 'invalid-input' || error.code === 'invalid-request' ? { status: 400, code: error.code, message: error.message } : translationFailure(error);
-      sendJson(res, failure.status, { error: failure.code, message: failure.message });
+      sendJson(res, failure.status, { error: failure.code, message: failure.message }, matchedOrigin);
     });
     return;
   }
   if (req.method === 'POST' && req.url.split('?')[0] === '/api/smart-note') {
-    readJsonBody(req, 262144).then(body => generateSmartNoteWithGemini(body)).then(result => sendJson(res, 200, result)).catch(error => {
+    readJsonBody(req, 262144).then(body => generateSmartNoteWithGemini(body)).then(result => sendJson(res, 200, result, matchedOrigin)).catch(error => {
       const failure = error.code === 'invalid-input' || error.code === 'invalid-request' || error.code === 'invalid-smart-note' ? { status: 400, code: error.code, message: error.message } : translationFailure(error);
-      sendJson(res, failure.status, { error: failure.code, message: failure.message });
+      sendJson(res, failure.status, { error: failure.code, message: failure.message }, matchedOrigin);
     });
     return;
   }
   if (req.method === 'POST' && req.url.split('?')[0] === '/api/schedule-extract') {
-    readJsonBody(req, 262144).then(body => extractSchedulesWithGemini(body)).then(result => sendJson(res, 200, { candidates: result })).catch(error => {
+    readJsonBody(req, 262144).then(body => extractSchedulesWithGemini(body)).then(result => sendJson(res, 200, { candidates: result }, matchedOrigin)).catch(error => {
       const failure = error.code === 'invalid-input' || error.code === 'invalid-request' || error.code === 'invalid-schedule' ? { status: 400, code: error.code, message: error.message } : translationFailure(error);
-      sendJson(res, failure.status, { error: failure.code, message: failure.message });
+      sendJson(res, failure.status, { error: failure.code, message: failure.message }, matchedOrigin);
     });
     return;
   }
   if (req.method === 'GET' && req.url.split('?')[0] === '/api/opportunities') {
-    listYouthPolicies().then(result => sendJson(res, 200, { source: 'ontong-youth', ...result })).catch(error => {
+    listYouthPolicies().then(result => sendJson(res, 200, { source: 'ontong-youth', ...result }, matchedOrigin)).catch(error => {
       const failure = error.code === 'api-key-missing' ? { status: 503, code: error.code, message: 'The public-data server key is not configured.' } : error.code === 'insecure-redirect' ? { status: 502, code: error.code, message: 'The public API redirected this credential-bearing request to an insecure endpoint.' } : opportunityFailure(error);
-      sendJson(res, failure.status, { error: failure.code, message: failure.message });
+      sendJson(res, failure.status, { error: failure.code, message: failure.message }, matchedOrigin);
     });
     return;
   }
@@ -392,6 +451,12 @@ const server = http.createServer((req, res) => {
 });
 server.on('upgrade', (request, socket) => {
   if (request.url.split('?')[0] !== '/api/stt') { socket.destroy(); return; }
+  const origin = request.headers.origin;
+  if (origin && !resolveMatchingOrigin(origin)) {
+    socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\nOrigin not allowed');
+    socket.destroy();
+    return;
+  }
   const key = request.headers['sec-websocket-key']; if (!key) { socket.destroy(); return; }
   const accept = crypto.createHash('sha1').update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
   socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
@@ -405,4 +470,5 @@ server.on('upgrade', (request, socket) => {
   socket.on('error', closeStream); socket.on('close', closeStream);
 });
 const port = Number(process.env.PORT || 4173);
-server.listen(port, () => console.log(`Study Mate is running at http://localhost:${port}`));
+const host = process.env.HOST || '0.0.0.0';
+server.listen(port, host, () => console.log(`Study Mate is running at http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`));
