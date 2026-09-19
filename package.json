@@ -1,0 +1,14 @@
+{
+  "name": "study-mate",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check src/app.js && node --check src/services/index.js",
+    "test:schedule": "node scripts/test-schedule-date.mjs"
+  },
+  "dependencies": {
+    "@google/genai": "^1.37.0",
+    "@google-cloud/speech": "^6.7.0"
+  }
+}

@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+const sourcePath = new URL('../src/services/index.js', import.meta.url);
+const serviceSource = readFileSync(sourcePath, 'utf8');
+const services = await import(`data:text/javascript;base64,${Buffer.from(serviceSource).toString('base64')}`);
+const reference = '2026-09-19T10:00:00+09:00';
+const resolve = text => services.normalizeScheduleDate(text, reference);
+
+assert.equal(resolve('9월 25일까지 과제를 제출하세요.').date, '2026-09-25');
+assert.equal(resolve('다음 주 목요일에 시험이 있습니다.').date, '2026-09-24');
+assert.equal(resolve('이번 주 금요일까지 제출하세요.').date, '2026-09-18');
+assert.equal(resolve('2주 뒤에 발표가 있습니다.').date, '2026-10-03');
+assert.equal(resolve('내일 퀴즈를 보겠습니다.').date, '2026-09-20');
+assert.equal(services.normalizeScheduleDate('1월 5일까지 제출', '2026-12-20T10:00:00+09:00').date, '2027-01-05');
+assert.equal(resolve('목요일에 제출하세요.').status, 'AMBIGUOUS');
+assert.equal(resolve('다음 시간에 설명하겠습니다.').status, 'AMBIGUOUS');
+assert.deepEqual(services.extractLocalScheduleCandidates(['오늘 설명하는 이 기술은 2020년에 발표되었습니다.'], { recordedAt: reference }), []);
+const candidates = services.extractLocalScheduleCandidates([{ id: 'segment-7', correctedKorean: '다음 주 목요일에 중간고사를 보겠습니다.', startMs: 32000 }], { recordedAt: reference, course: 'Database' });
+assert.equal(candidates.length, 1);
+assert.deepEqual({ date: candidates[0].date, sourceSegmentId: candidates[0].sourceSegmentId, sourceTimestamp: candidates[0].sourceTimestamp, resolutionStatus: candidates[0].resolutionStatus }, { date: '2026-09-24', sourceSegmentId: 'segment-7', sourceTimestamp: 32000, resolutionStatus: 'RESOLVED' });
+const lectureA = services.extractLocalScheduleCandidates(['9월 25일까지 데이터베이스 과제를 제출하세요. 10월 2일에는 중간고사를 보겠습니다. 10월 10일에는 발표가 있습니다.'], { id: 'lecture-a', recordedAt: reference });
+const lectureB = services.extractLocalScheduleCandidates(['9월 25일에 알고리즘 시험이 있습니다.'], { id: 'lecture-b', recordedAt: reference });
+assert.equal(lectureA.length, 3);
+assert.equal(lectureB.length, 1);
+assert.equal(services.filterPendingScheduleCandidates([...lectureA, ...lectureB], [], []).length, 4);
+const confirmedEvent = { sourceCandidateId: lectureA[1].id, candidateFingerprint: lectureA[1].candidateFingerprint };
+const pendingAfterConfirm = services.filterPendingScheduleCandidates([...lectureA, ...lectureB], [confirmedEvent], []);
+assert.equal(pendingAfterConfirm.length, 3);
+assert.equal(pendingAfterConfirm.some(candidate => candidate.id === lectureA[1].id), false);
+console.log('Schedule date normalization fixtures passed.');
