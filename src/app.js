@@ -62,6 +62,7 @@ const youthPolicyService = new YouthPolicyAdapter();
 const eligibilityMatcher = new EligibilityMatcher();
 const campusEvents = demoMode ? [{ title: 'International Tech Career Fair', description: 'Meet campus labs and local technology companies.', tags: ['Computer Science', 'Career'] }, { title: 'Academic Korean Workshop', description: 'Practice presentation and classroom communication skills.', tags: ['Academic Korean'] }] : [];
 let appLanguage = localStorage.getItem('studyMateLanguage') || (student.preferredLanguage === 'Korean' ? 'ko' : 'en');
+let profileState = { saved: false, timer: null };
 let chatState = { messages: [], loading: false, loadingLabel: '', error: '', publicData: null };
 const translations = { ko: { Home: '홈', Lecture: '강의', Notes: '노트', Schedule: '일정', Board: '게시판', 'AI Chatbot': 'AI 챗봇', 'My Page': '마이페이지', 'Good morning, Minh Anh!': '안녕하세요, Minh Anh님!', 'Study Mate': 'Study Mate', 'Start recording': '녹음 시작', 'Save PDF': 'PDF 저장', 'Write a post': '글 작성' } };
 const t = text => translations[appLanguage]?.[text] || text;
@@ -114,10 +115,42 @@ document.addEventListener('click', e => {
   if (chatAction) handleChatAction(chatAction, e.target.closest('[data-chat-action]'));
   const courseAction = e.target.closest('[data-course-action]')?.dataset.courseAction;
   if (courseAction) handleCourseAction(courseAction, e.target.closest('[data-course-action]'));
-  if (e.target.closest('[data-profile-action="save"]')) { const age=Number(document.querySelector('#profile-age')?.value); if (!Number.isInteger(age) || age < 0 || age > 120) return; student.age=age; student.residence=document.querySelector('#profile-residence')?.value || ''; student.enrollmentStatus=document.querySelector('#profile-enrollment')?.value || 'ENROLLED'; student.employmentStatus=document.querySelector('#profile-employment')?.value || 'UNEMPLOYED'; student.interests=[...document.querySelectorAll('[data-profile-interest]:checked')].map(x=>x.value); localStorage.setItem('studyMateStudentProfile', JSON.stringify({age:student.age,residence:student.residence,enrollmentStatus:student.enrollmentStatus,employmentStatus:student.employmentStatus,interests:student.interests})); render(); }
+  if (e.target.closest('[data-profile-action="save"]')) {
+    if (profileState.saved) return;
+    const age = Number(document.querySelector('#profile-age')?.value);
+    if (!Number.isInteger(age) || age < 0 || age > 120) return;
+    student.age = age;
+    student.residence = document.querySelector('#profile-residence')?.value || '';
+    student.enrollmentStatus = document.querySelector('#profile-enrollment')?.value || 'ENROLLED';
+    student.employmentStatus = document.querySelector('#profile-employment')?.value || 'UNEMPLOYED';
+    student.interests = [...document.querySelectorAll('[data-profile-interest]:checked')].map(x => x.value);
+    localStorage.setItem('studyMateStudentProfile', JSON.stringify({
+      age: student.age,
+      residence: student.residence,
+      enrollmentStatus: student.enrollmentStatus,
+      employmentStatus: student.employmentStatus,
+      interests: student.interests
+    }));
+    profileState.saved = true;
+    render();
+    if (profileState.timer) clearTimeout(profileState.timer);
+    profileState.timer = setTimeout(() => {
+      profileState.saved = false;
+      profileState.timer = null;
+      render();
+    }, 1500);
+  }
 });
 document.addEventListener('change', e => {
-  if (e.target.id === 'app-language') { const previousLanguage = appLanguage; appLanguage = e.target.value; localStorage.setItem('studyMateLanguage', appLanguage); if (location.pathname === '/notes') localizeSelectedNote(appLanguage, previousLanguage); render(); }
+  if (e.target.id === 'app-language') {
+    const previousLanguage = appLanguage;
+    appLanguage = e.target.value;
+    localStorage.setItem('studyMateLanguage', appLanguage);
+    if (location.pathname === '/notes' || location.pathname.startsWith('/lectures/')) {
+      localizeSelectedNote(appLanguage, previousLanguage);
+    }
+    render();
+  }
   if (e.target.id === 'translation-language') { translationTarget = e.target.value; localStorage.setItem('studyMateTranslationTarget', translationTarget); }
   if (e.target.id === 'lecture-course') { selectedCourseId = e.target.value; localStorage.setItem('studyMateSelectedCourse', selectedCourseId); const title = document.querySelector('#lecture-title'); if (title) title.value = lectureTitleForCourse(selectedCourse()?.name); }
   if (e.target.id === 'review-speed') { reviewState.speed = Number(e.target.value) || 1; const audio = document.querySelector('#review-audio'); if (audio) audio.playbackRate = reviewState.speed; }
@@ -448,6 +481,17 @@ function smartNoteSkeleton() {
 
 reviewNote = function reviewNoteWithRestoredContent(recording, note) {
   if (!note) return reviewEmptyNote(recording);
+  if (note.contentLanguage !== appLanguage) {
+    if (applyNoteVersion(note, appLanguage)) {
+      persistAppState();
+    } else if (noteState.localization.status !== 'localizing') {
+      noteState.selectedLectureId = recording.id;
+      localizeSelectedNote(appLanguage, note.contentLanguage || 'en');
+      return smartNoteSkeleton();
+    } else {
+      return smartNoteSkeleton();
+    }
+  }
   const editing = noteState.editing && noteState.selectedLectureId === recording.id;
   const reveal = !editing && noteState.revealLectureId === recording.id;
   const actions = editing
@@ -462,8 +506,11 @@ handleReviewAction = async function handleReviewActionWithGeneration(action, ele
   if (action === 'generate-note') {
     const recording = recordings.find(item => item.id === reviewState.lectureId);
     if (!recording) return;
+    reviewState.tab = 'note';
     noteState.selectedLectureId = recording.id;
     await handleNoteAction('generate', element);
+    reviewState.tab = 'note';
+    render();
     return;
   }
   return handleExistingReviewAction(action, element);
@@ -538,7 +585,7 @@ async function handleNoteAction(action, element) {
         const { timing, ...note } = generated; created = note; metric.geminiRequests = 1; Object.assign(metric, timing || {});
         smartNoteCache.set(cacheKey, structuredClone(created));
       }
-      created.course = lecture.course; created.courseId = lecture.courseId || null; created.reviewPoints = created.studyTips || created.reviewPoints || []; if (!created.quizzes) created.quizzes = await quizGenerator.generate(created); created.contentLanguage = appLanguage; created.sourceLanguage = appLanguage; created.localizedVersions = {}; saveNoteVersion(created, appLanguage); noteState.notes[lecture.id] = created; noteState.quizAnswers = {}; metric.cacheSavedAt = performance.now(); noteState.revealLectureId = lecture.id; noteState.generation = { status: 'success', lectureId: lecture.id, error: '' };
+      created.course = lecture.course; created.courseId = lecture.courseId || null; created.generationVersion = 2; created.reviewPoints = created.studyTips || created.reviewPoints || []; if (!created.quizzes) created.quizzes = await quizGenerator.generate(created); created.contentLanguage = appLanguage; created.sourceLanguage = appLanguage; created.localizedVersions = {}; saveNoteVersion(created, appLanguage); noteState.notes[lecture.id] = created; noteState.quizAnswers = {}; metric.cacheSavedAt = performance.now(); noteState.revealLectureId = lecture.id; noteState.generation = { status: 'success', lectureId: lecture.id, error: '' };
     } catch (generationError) { noteState.generation = { status: 'error', lectureId: lecture.id, error: generationError.message || (appLanguage === 'ko' ? 'Smart Note를 생성할 수 없습니다.' : 'Smart Note could not be generated.') }; }
     render();
     if (noteState.generation.status === 'success') requestAnimationFrame(() => { metric.noteRenderedAt = performance.now(); recordSmartNoteMetric(metric); requestAnimationFrame(() => { noteState.revealLectureId = null; }); });
@@ -682,7 +729,123 @@ function isPublicOpportunityQuestion(prompt) { return /청년.?정책|지원.?�
 function chatIntent(prompt) { const q=String(prompt).toLowerCase(); if (isPublicOpportunityQuestion(q)) return 'POLICY'; if (/일정|시험|과제|deadline|schedule/.test(q)) return 'SCHEDULE'; if (/과목|수업|강의 시간|course/.test(q)) return 'COURSE'; if (/노트|요약|note|summary/.test(q)) return 'NOTE'; if (/녹음|스마트 노트|일정 추출|record/.test(q)) return 'APP_HELP'; return 'GENERAL'; }
 function localChatAnswer(intent) { if (intent==='SCHEDULE') { const items=scheduleState.items.filter(x=>x.status==='confirmed'); return items.length ? ui(`Your next schedule is ${items[0].title} on ${items[0].date}.`, `다음 일정은 ${items[0].date} ${items[0].title}입니다.`) : ui('There are no confirmed schedules yet.', '확정된 일정이 없습니다.'); } if (intent==='COURSE') return ui(`Your current courses are ${courses.map(x=>x.name).join(', ')}.`, `현재 수강 과목은 ${courses.map(x=>x.name).join(', ')}입니다.`); if (intent==='NOTE') { const note=Object.values(noteState.notes)[0]; return note ? ui(`Your latest Smart Note is ${note.title}.`, `최근 Smart Note는 ${note.title}입니다.`) : ui('There is no saved Smart Note yet.', '저장된 Smart Note가 아직 없습니다.'); } if (intent==='APP_HELP') return ui('Open Lecture, choose Start recording, allow the microphone, then finish to save the transcript.', '강의 화면에서 녹음 시작을 누르고 마이크를 허용하세요. 종료하면 자막과 녹음이 저장됩니다.'); return ui('Hello! Ask me about your courses, schedule, notes, recording, or youth-policy recommendations.', '안녕하세요! 수강 과목, 일정, 노트, 녹음 방법 또는 청년정책 추천을 물어보세요.'); }
 function policyStrategy(prompt) { const text = String(prompt || '').toLowerCase(); if (/전공|major|학과/.test(text)) return 'MAJOR'; if (/취업|career|진로|일자리/.test(text)) return 'CAREER'; if (/주거|housing/.test(text)) return 'HOUSING'; if (/교육|education|학비|장학/.test(text)) return 'EDUCATION'; return 'GENERAL'; }
-function rankOpportunities(items, prompt) { const strategy=policyStrategy(prompt); const profileTerms=[student.department,...student.majorKeywords,...courses.map(x=>x.name)].join(' ').toLowerCase().split(/\s+/).filter(x=>x.length>2); const intentTerms={MAJOR:['전공','공학','컴퓨터','소프트웨어','디지털','기술'],CAREER:['취업','일자리','채용','직무','인턴'],HOUSING:['주거','월세','전세','주택'],EDUCATION:['교육','훈련','학비','장학'],GENERAL:[]}[strategy]; return items.filter(x=>x.match?.status!=='NOT_MATCHED').map(x=>{const text=[x.title,x.description,x.major,x.eligibility].filter(Boolean).join(' ').toLowerCase(); const profileScore=profileTerms.reduce((n,t)=>n+(text.includes(t)?3:0),0); const intentScore=intentTerms.reduce((n,t)=>n+(text.includes(t)?2:0),0); const unrestricted=!x.major || /제한.?없|전체|무관/i.test(String(x.major)); const relevance=profileScore+intentScore+(unrestricted?1:0); const reason=profileScore?ui('Matches your saved department or current courses; confirm eligibility.','저장된 전공 또는 수강 과목과 관련된 정책입니다. 지원 자격을 확인하세요.'):unrestricted?ui('No major restriction is published; confirm the remaining eligibility.','전공 제한 정보가 없으며 다른 지원 자격을 확인해야 합니다.'):ui('Matches the purpose of your question; confirm eligibility.','질문 목적과 관련된 정책입니다. 지원 자격을 확인하세요.'); return {...x,relevance,recommendationReason:reason};}).sort((a,b)=>b.relevance-a.relevance); }
+
+const interestKeywordsMap = {
+  CAREER: ['취업', '일자리', '채용', '인턴', '직무', 'career', 'job', 'employment'],
+  HOUSING: ['주거', '주택', '월세', '전세', '임대', 'housing', 'rent'],
+  FINANCIAL_SUPPORT: ['장학', '장학금', '금융', '지원금', '수당', '대출', 'financial', 'scholarship'],
+  STARTUP: ['창업', '사업', '스타트업', '기업가', 'venture', 'startup'],
+  EDUCATION: ['교육', '훈련', '학습', '강좌', 'education', 'training'],
+  CULTURE: ['문화', '예술', '여가', '체육', 'culture', 'arts']
+};
+
+const interestLabels = {
+  CAREER: { en: 'Career', ko: '취업' },
+  HOUSING: { en: 'Housing', ko: '주거' },
+  FINANCIAL_SUPPORT: { en: 'Financial support', ko: '금융지원' },
+  STARTUP: { en: 'Startup', ko: '창업' },
+  EDUCATION: { en: 'Education', ko: '교육' },
+  CULTURE: { en: 'Culture', ko: '문화' }
+};
+
+function normalizeRegionText(region) {
+  const r = String(region || '').trim();
+  if (!r) return [];
+  const tokens = [r.toLowerCase()];
+  if (/전남|전라남도/.test(r)) tokens.push('전남', '전라남도');
+  if (/전북|전북특별자치도|전라북도/.test(r)) tokens.push('전북', '전북특별자치도', '전라북도');
+  if (/광주|광주광역시/.test(r)) tokens.push('광주', '광주광역시');
+  if (/서울|서울특별시/.test(r)) tokens.push('서울', '서울특별시');
+  if (/경기|경기도/.test(r)) tokens.push('경기', '경기도');
+  if (/인천|인천광역시/.test(r)) tokens.push('인천', '인천광역시');
+  if (/부산|부산광역시/.test(r)) tokens.push('부산', '부산광역시');
+  if (/대구|대구광역시/.test(r)) tokens.push('대구', '대구광역시');
+  if (/대전|대전광역시/.test(r)) tokens.push('대전', '대전광역시');
+  return [...new Set(tokens)];
+}
+
+function rankOpportunities(items, prompt) {
+  const strategy = policyStrategy(prompt);
+  const promptText = String(prompt || '').toLowerCase();
+  const profileDepartmentTerms = [student.department, ...student.majorKeywords, ...courses.map(x => x.name)]
+    .join(' ').toLowerCase().split(/\s+/).filter(x => x.length > 2);
+  const intentTerms = {
+    MAJOR: ['전공', '공학', '컴퓨터', '소프트웨어', '디지털', '기술'],
+    CAREER: ['취업', '일자리', '채용', '직무', '인턴'],
+    HOUSING: ['주거', '월세', '전세', '주택'],
+    EDUCATION: ['교육', '훈련', '학비', '장학'],
+    GENERAL: []
+  }[strategy];
+
+  const userInterests = Array.isArray(student.interests) ? student.interests : [];
+  const residenceTokens = normalizeRegionText(student.residence);
+  const isStudent = ['ENROLLED', 'ON_LEAVE', 'EXPECTED_GRADUATION'].includes(student.enrollmentStatus);
+  const isUnemployed = ['UNEMPLOYED', 'JOB_SEEKING', 'PREPARING_STARTUP'].includes(student.employmentStatus);
+
+  return items.filter(x => x.match?.status !== 'NOT_MATCHED').map(x => {
+    const text = [x.title, x.description, x.major, x.eligibility, x.region, x.studentStatus].filter(Boolean).join(' ').toLowerCase();
+    const matchedReasons = [];
+    let score = 0;
+
+    // 1. User Interests matching (Weight: 5 per matched interest)
+    for (const interest of userInterests) {
+      const keywords = interestKeywordsMap[interest] || [];
+      if (keywords.some(kw => text.includes(kw))) {
+        score += 5;
+        const label = ui(interestLabels[interest]?.en || interest, interestLabels[interest]?.ko || interest);
+        if (!matchedReasons.includes(label)) matchedReasons.push(label);
+      }
+    }
+
+    // 2. Residence matching (Weight: 4)
+    if (residenceTokens.length && residenceTokens.some(tok => text.includes(tok) || String(x.region || '').toLowerCase().includes(tok))) {
+      score += 4;
+      const resLabel = student.residence.trim();
+      if (!matchedReasons.includes(resLabel)) matchedReasons.push(resLabel);
+    }
+
+    // 3. Employment / Enrollment status matching (Weight: 3)
+    if (isStudent && (/대학생|재학생|휴학생|대학/.test(text) || String(x.studentStatus || '').includes('대학'))) {
+      score += 3;
+      const stLabel = ui('Student', '대학생');
+      if (!matchedReasons.includes(stLabel)) matchedReasons.push(stLabel);
+    }
+    if (isUnemployed && /미취업|구직|취준생|예비|미취업자/.test(text)) {
+      score += 3;
+      const unLabel = ui('Job seeker', '구직자');
+      if (!matchedReasons.includes(unLabel)) matchedReasons.push(unLabel);
+    }
+
+    // 4. Department / Major matching (Weight: 2)
+    const deptMatches = profileDepartmentTerms.some(t => text.includes(t));
+    if (deptMatches) {
+      score += 2;
+      const deptLabel = ui('Major match', '전공 연계');
+      if (!matchedReasons.includes(deptLabel)) matchedReasons.push(deptLabel);
+    }
+
+    // 5. Query Intent matching (Weight: 2)
+    const intentMatches = intentTerms.some(t => text.includes(t));
+    if (intentMatches) {
+      score += 2;
+    }
+
+    // Unrestricted major bonus (Weight: 1)
+    const unrestricted = !x.major || /제한.?없|전체|무관/i.test(String(x.major));
+    if (unrestricted) score += 1;
+
+    let reason = '';
+    if (matchedReasons.length) {
+      reason = `${ui('Why recommended', '추천 이유')} · ${matchedReasons.join(' · ')}`;
+    } else if (unrestricted) {
+      reason = ui('No major restriction is published; confirm the remaining eligibility.', '전공 제한 정보가 없으며 다른 지원 자격을 확인해야 합니다.');
+    } else {
+      reason = ui('Matches the purpose of your question; confirm eligibility.', '질문 목적과 관련된 정책입니다. 지원 자격을 확인하세요.');
+    }
+
+    return { ...x, relevance: score, matchedReasons, recommendationReason: reason };
+  }).sort((a, b) => b.relevance - a.relevance);
+}
 function opportunityCards(items = []) {
   if (!items.length) return `<p class="empty-copy">${ui('The official source returned no matching items. Try a broader question.', '공식 데이터에서 조건에 맞는 항목을 찾지 못했습니다. 더 넓은 질문으로 다시 시도해 보세요.')}</p>`;
   return `<div class="opportunity-list">${items.slice(0, 6).map(item => { const match = item.match || { status: 'UNKNOWN', reason: ui('Confirm official eligibility details.', '공식 지원 자격을 확인하세요.') }; const reason = match.status === 'UNKNOWN' ? ui('Confirm official eligibility details before applying.', '신청 전 공식 지원 자격을 확인하세요.') : match.reason; const date = item.applicationDeadline ? `${ui('Deadline', '마감')} ${item.applicationDeadline}` : ui('Deadline not provided by source', '출처에 마감일 미제공'); const sourceLink = item.officialUrl && /^https?:\/\//i.test(item.officialUrl) ? `<a href="${esc(item.officialUrl)}" target="_blank" rel="noopener noreferrer">${ui('Official details ↗', '공식 상세 보기 ↗')}</a>` : ''; return `<article class="opportunity-card"><p class="tag">${esc(item.source || 'official source')}</p><h3>${esc(item.title || ui('Untitled policy', '제목 미제공 정책'))}</h3><p>${esc(item.organization || ui('Organization not provided', '기관 정보 미제공'))}</p><p>${esc(item.description || ui('Description not provided', '설명 미제공'))}</p><small class="pill warm">${esc(match.status)}</small><small>${esc(item.recommendationReason || reason)}</small><small>${esc(date)}</small>${sourceLink}</article>`; }).join('')}</div>`;
@@ -703,7 +866,13 @@ let courseEditor = { mode: null, id: null, error: '' };
 const profileLabel = value => ({ ENROLLED: ui('Enrolled','재학'), ON_LEAVE: ui('On Leave','휴학'), EXPECTED_GRADUATION: ui('Expected Graduation','졸업 예정'), GRADUATED: ui('Graduated','졸업'), EMPLOYED: ui('Employed','재직'), UNEMPLOYED: ui('Unemployed','미취업'), JOB_SEEKING: ui('Job Seeking','구직'), FREELANCER: ui('Freelancer','프리랜서'), PREPARING_STARTUP: ui('Preparing Startup','창업 준비'), CAREER: ui('Career','취업'), HOUSING: ui('Housing','주거'), FINANCIAL_SUPPORT: ui('Financial support','장학금/금융지원'), STARTUP: ui('Startup','창업'), EDUCATION: ui('Education','교육'), CULTURE: ui('Culture','문화') }[value] || value);
 const weekdayLabel = value => ({ Sun: ui('Sun', '일'), Mon: ui('Mon', '월'), Tue: ui('Tue', '화'), Wed: ui('Wed', '수'), Thu: ui('Thu', '목'), Fri: ui('Fri', '금'), Sat: ui('Sat', '토') }[value] || value);
 function courseForm(course = {}) { return `<section class="card top-space"><h2>${courseEditor.mode === 'edit' ? ui('Edit course', '과목 수정') : ui('Add course', '과목 추가')}</h2>${courseEditor.error ? `<p class="note-error">${esc(courseEditor.error)}</p>` : ''}<div class="grid two"><label>${ui('Course name', '과목명')}<input id="course-name" value="${esc(course.name || '')}"/></label><label>${ui('Professor', '교수명')}<input id="course-professor" value="${esc(course.professor || '')}"/></label><label>${ui('Day', '요일')}<select id="course-day"><option value="">${ui('Not set', '미설정')}</option>${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(day => `<option value="${day}" ${course.dayOfWeek === day ? 'selected' : ''}>${weekdayLabel(day)}</option>`).join('')}</select></label><label>${ui('Start time', '시작 시간')}<input id="course-start" type="time" value="${esc(course.startTime || '')}"/></label><label>${ui('End time', '종료 시간')}<input id="course-end" type="time" value="${esc(course.endTime || '')}"/></label></div><div class="candidate-actions"><button class="button" data-course-action="save">${ui('Save', '저장')}</button><button class="button secondary" data-course-action="cancel">${ui('Cancel', '취소')}</button></div></section>`; }
-function profile() { const rows = [['Student ID', student.studentId], ['Nationality', student.nationality], ['Department', student.department], ['Year', ui(`Year ${student.grade}`, `${student.grade}학년`)], ['GPA', student.gpa], ['Preferred language', student.preferredLanguage]]; const interests=['CAREER','HOUSING','FINANCIAL_SUPPORT','STARTUP','EDUCATION','CULTURE']; const fields=`<section class="card top-space profile-form"><h2>${ui('Policy recommendation profile','정책 추천 프로필')}</h2><div class="grid two"><label>${ui('Age','만 나이')}<input id="profile-age" type="number" min="0" max="120" value="${esc(student.age)}"/></label><label>${ui('Residence','거주 지역')}<input id="profile-residence" value="${esc(student.residence || '')}"/></label><label>${ui('Enrollment status','학적 상태')}<select id="profile-enrollment">${['ENROLLED','ON_LEAVE','EXPECTED_GRADUATION','GRADUATED'].map(x=>`<option value="${x}" ${student.enrollmentStatus===x?'selected':''}>${profileLabel(x)}</option>`).join('')}</select></label><label>${ui('Employment status','취업 상태')}<select id="profile-employment">${['EMPLOYED','UNEMPLOYED','JOB_SEEKING','FREELANCER','PREPARING_STARTUP'].map(x=>`<option value="${x}" ${student.employmentStatus===x?'selected':''}>${profileLabel(x)}</option>`).join('')}</select></label></div><div class="profile-interests" role="group" aria-label="${ui('Interests', '관심 분야')}">${interests.map(x=>`<label><input type="checkbox" data-profile-interest value="${x}" ${(student.interests||[]).includes(x)?'checked':''}/> <span>${profileLabel(x)}</span></label>`).join('')}</div><button class="button" data-profile-action="save">${ui('Save profile','프로필 저장')}</button></section>`; return `${topbar('My Page')}<main><div class="page-intro"><p class="tag">MY PROFILE</p><h2>My learning profile.</h2></div><section class="profile-card"><span class="profile-avatar">${initials}</span><div><h2>${student.name}</h2><p>${student.department} · ${ui(`Year ${student.grade}`, `${student.grade}학년`)}</p></div></section><section class="card"><h2>Student information</h2><dl>${rows.map(([key,value])=>`<div><dt>${key}</dt><dd>${value}</dd></div>`).join('')}</dl></section>${fields}</main>`; }
+function profile() {
+  const rows = [['Student ID', student.studentId], ['Nationality', student.nationality], ['Department', student.department], ['Year', ui(`Year ${student.grade}`, `${student.grade}학년`)], ['GPA', student.gpa], ['Preferred language', student.preferredLanguage]];
+  const interests = ['CAREER','HOUSING','FINANCIAL_SUPPORT','STARTUP','EDUCATION','CULTURE'];
+  const saveLabel = profileState.saved ? `✓ ${ui('Saved!', '저장됨')}` : ui('Save profile', '프로필 저장');
+  const fields = `<section class="card top-space profile-form"><h2>${ui('Policy recommendation profile','정책 추천 프로필')}</h2><div class="grid two"><label>${ui('Age','만 나이')}<input id="profile-age" type="number" min="0" max="120" value="${esc(student.age)}"/></label><label>${ui('Residence','거주 지역')}<input id="profile-residence" value="${esc(student.residence || '')}"/></label><label>${ui('Enrollment status','학적 상태')}<select id="profile-enrollment">${['ENROLLED','ON_LEAVE','EXPECTED_GRADUATION','GRADUATED'].map(x=>`<option value="${x}" ${student.enrollmentStatus===x?'selected':''}>${profileLabel(x)}</option>`).join('')}</select></label><label>${ui('Employment status','취업 상태')}<select id="profile-employment">${['EMPLOYED','UNEMPLOYED','JOB_SEEKING','FREELANCER','PREPARING_STARTUP'].map(x=>`<option value="${x}" ${student.employmentStatus===x?'selected':''}>${profileLabel(x)}</option>`).join('')}</select></label></div><div class="profile-interests" role="group" aria-label="${ui('Interests', '관심 분야')}">${interests.map(x=>`<label class="condition-chip"><input type="checkbox" data-profile-interest value="${x}" ${(student.interests||[]).includes(x)?'checked':''}/> <span>${profileLabel(x)}</span></label>`).join('')}</div><button class="button" data-profile-action="save" ${profileState.saved ? 'disabled style="background:#10b981;border-color:#10b981;color:#ffffff;"' : ''}>${saveLabel}</button></section>`;
+  return `${topbar('My Page')}<main><div class="page-intro"><p class="tag">MY PROFILE</p><h2>My learning profile.</h2></div><section class="profile-card"><span class="profile-avatar">${initials}</span><div><h2>${student.name}</h2><p>${student.department} · ${ui(`Year ${student.grade}`, `${student.grade}학년`)}</p></div></section><section class="card"><h2>Student information</h2><dl>${rows.map(([key,value])=>`<div><dt>${key}</dt><dd>${value}</dd></div>`).join('')}</dl></section>${fields}</main>`;
+}
 async function handleCourseAction(action, element) { if (action === 'add') { courseEditor = { mode: 'add', id: null, error: '' }; render(); return; } if (action === 'edit') { courseEditor = { mode: 'edit', id: element.dataset.courseId, error: '' }; render(); return; } if (action === 'cancel') { courseEditor = { mode: null, id: null, error: '' }; render(); return; } if (action === 'delete') { const course = courses.find(item => item.id === element.dataset.courseId); if (!course || !window.confirm(ui(`Remove ${course.name}? Existing recordings and notes will be kept.`, `${course.name}을 삭제할까요? 기존 녹음과 노트는 유지됩니다.`))) return; courses = courses.filter(item => item.id !== course.id); if (selectedCourseId === course.id) selectedCourseId = courses[0]?.id || ''; courseEditor = { mode: null, id: null, error: '' }; persistAppState(); render(); return; } if (action === 'save') { const name = document.querySelector('#course-name')?.value.trim(); const professor = document.querySelector('#course-professor')?.value.trim() || ''; const dayOfWeek = document.querySelector('#course-day')?.value || ''; const startTime = document.querySelector('#course-start')?.value || ''; const endTime = document.querySelector('#course-end')?.value || ''; if (!name) { courseEditor.error = ui('Course name is required.', '과목명을 입력하세요.'); render(); return; } if ((startTime && !endTime) || (!startTime && endTime) || (startTime && endTime && endTime <= startTime)) { courseEditor.error = ui('Enter a valid class time range.', '올바른 수업 시간을 입력하세요.'); render(); return; } const course = { id: courseEditor.mode === 'edit' ? courseEditor.id : `course-${crypto.randomUUID?.() || Date.now()}`, name, professor, dayOfWeek, startTime, endTime }; const previous = courses; courses = courseEditor.mode === 'edit' ? courses.map(item => item.id === course.id ? course : item) : [...courses, course]; if (!selectedCourseId) selectedCourseId = course.id; try { await courseService.save(courses); courseEditor = { mode: null, id: null, error: '' }; persistAppState(); render(); } catch (_) { courses = previous; courseEditor.error = ui('Course could not be saved in this browser.', '이 브라우저에 과목을 저장할 수 없습니다.'); render(); } } }
 function mountSttDebug() { const anchor = document.querySelector('#saved-recording'); if (!anchor || !isDevelopment) return; anchor.insertAdjacentHTML('beforebegin', '<details id="stt-debug" class="stt-debug"><summary>STT & Translation Debug (development)</summary><dl><div><dt>STT engine</dt><dd data-debug-engine>—</dd></div><div><dt>STT connection</dt><dd data-debug-connection>idle</dd></div><div><dt>Language</dt><dd data-debug-language>—</dd></div><div><dt>Audio</dt><dd data-debug-audio>—</dd></div><div><dt>Chunks</dt><dd data-debug-chunks>0 / 0 bytes</dd></div><div><dt>STT counts</dt><dd data-debug-counts>interim 0, final 0, reconnect 0</dd></div><div><dt>Pipeline latency</dt><dd data-debug-latency>—</dd></div><div><dt>STT error</dt><dd data-debug-error>—</dd></div><div><dt>Last STT event</dt><dd data-debug-last>Idle</dd></div><div><dt>Interim</dt><dd data-debug-interim>—</dd></div><div><dt>Final</dt><dd data-debug-final>—</dd></div><div><dt>Translation engine</dt><dd data-translation-engine>—</dd></div><div><dt>Model</dt><dd data-translation-model>—</dd></div><div><dt>Translation state</dt><dd data-translation-connection>idle</dd></div><div><dt>Target language</dt><dd data-translation-language>—</dd></div><div><dt>Translation counts</dt><dd data-translation-requests>request 0, success 0, failure 0</dd></div><div><dt>Last latency</dt><dd data-translation-latency>—</dd></div><div><dt>Translation breakdown</dt><dd data-translation-breakdown>—</dd></div><div><dt>Translation input</dt><dd data-translation-input>—</dd></div><div><dt>Translation error</dt><dd data-translation-error>—</dd></div></dl><pre data-debug-log>No STT event yet.</pre></details>'); refreshSttDebug(); }
 function reviewTime(ms = 0) { const seconds = Math.max(0, Math.floor(Number(ms) / 1000)); const hours = Math.floor(seconds / 3600); const minutes = Math.floor(seconds / 60) % 60; const base = `${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`; return hours ? `${String(hours).padStart(2, '0')}:${base}` : base; }
