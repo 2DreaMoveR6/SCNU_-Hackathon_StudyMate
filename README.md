@@ -144,6 +144,12 @@ npm run build          # Builds and syncs static assets to public/
 - **Browser-Bound Persistence**: Because data is saved locally in the browser's `localStorage` and `IndexedDB`, clearing browser data removes stored recordings and notes.
 - **Live Media Permissions**: Microphone capture and real-time STT streaming require explicit browser user permissions.
 
+## License
+
+This project is licensed under the MIT License. See the `LICENSE` file for details.
+
+Copyright (c) 2026 사이버틱 (CyberTic)
+
 ---
 
 # 🇰🇷 Study Mate — 한국어
@@ -291,3 +297,9 @@ npm run build          # 정적 자산 빌드 및 public/ 동기화 실행
 
 - **브라우저 종속 영속성**: 데이터가 브라우저의 `localStorage` 및 `IndexedDB`에 로컬 저장되므로, 브라우저 캐시 및 사이트 데이터를 초기화하면 저장된 녹음본과 노트가 삭제됩니다.
 - **실시간 미디어 권한**: 마이크 캡처 및 실시간 STT 스트리밍을 사용하려면 브라우저 사용자의 명시적인 마이크 권한 허용이 필요합니다.
+
+## 라이선스
+
+이 프로젝트는 MIT License에 따라 배포됩니다. 자세한 내용은 `LICENSE` 파일을 확인하세요.
+
+Copyright (c) 2026 사이버틱 (CyberTic)
