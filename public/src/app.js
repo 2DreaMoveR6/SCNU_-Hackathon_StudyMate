@@ -720,48 +720,51 @@ function isMobileDevice() {
   const isIpadOs = /Macintosh/i.test(ua) && touchPoints > 1;
   return mobileUa || isIpadOs || (window.matchMedia?.('(pointer: coarse)').matches && window.innerWidth <= 1024);
 }
+function triggerBlobDownload(blob, filename) {
+  cleanupPdfObjectUrl();
+  const url = URL.createObjectURL(blob);
+  activePdfObjectUrl = url;
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.style.display = 'none';
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
 async function downloadNotePdf(note, button) {
   if (pdfExportInProgress || !note) return;
   button ||= document.activeElement?.matches('button') ? document.activeElement : null;
   const isMobile = isMobileDevice();
-  let previewWindow = null;
-  if (isMobile) {
-    try { previewWindow = window.open('about:blank', '_blank'); } catch (_) {}
-  }
   pdfExportInProgress = true; setPdfButtonState(button, true);
   try {
     if (document.fonts?.ready) await document.fonts.ready;
     const blob = smartNotePdfBlob(smartNotePdfPages(note));
-    cleanupPdfObjectUrl();
-    const url = URL.createObjectURL(blob);
-    activePdfObjectUrl = url;
     const filename = `${String(note.title || 'smart-note').replace(/[\\/:*?"<>|]/g, '_')}.pdf`;
-    if (isMobile) {
-      if (previewWindow && !previewWindow.closed) {
-        previewWindow.location.href = url;
-      } else {
-        const link = document.createElement('a');
-        link.href = url;
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
-        link.style.display = 'none';
-        document.body.append(link);
-        link.click();
-        link.remove();
+    if (isMobile && typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+      let file = null;
+      try {
+        file = new File([blob], filename, { type: 'application/pdf' });
+      } catch (_) {}
+      const canShareFiles = file && typeof navigator.canShare === 'function' ? navigator.canShare({ files: [file] }) : false;
+      if (canShareFiles) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: note.title || 'Smart Note'
+          });
+          return;
+        } catch (shareError) {
+          if (shareError?.name === 'AbortError') {
+            return;
+          }
+          triggerBlobDownload(blob, filename);
+          return;
+        }
       }
-    } else {
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      link.style.display = 'none';
-      document.body.append(link);
-      link.click();
-      link.remove();
     }
+    triggerBlobDownload(blob, filename);
   } catch (_) {
-    if (previewWindow && !previewWindow.closed) {
-      try { previewWindow.close(); } catch (_) {}
-    }
     window.alert(ui('The PDF could not be created. Please try again.', 'PDF를 만들지 못했습니다. 다시 시도하세요.'));
   } finally {
     pdfExportInProgress = false; setPdfButtonState(button, false);
