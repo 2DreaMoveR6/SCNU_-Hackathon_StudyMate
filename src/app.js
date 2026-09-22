@@ -662,6 +662,15 @@ async function handleNoteAction(action, element) {
 function openKeywordPopup(keyword, noteOverride = null) { const selected = noteOverride || noteState.notes[noteState.selectedLectureId]; const detail = selected?.keywordDetails?.[keyword]; if (!detail) return; document.querySelector('#keyword-popup')?.remove(); document.body.insertAdjacentHTML('beforeend', localizeUi(`<div id="keyword-popup" class="keyword-modal" role="dialog" aria-modal="true"><div class="keyword-dialog"><button class="modal-close" data-note-action="close-keyword" aria-label="Close">${icon('x', { size: 'md' })}</button><p class="tag">KEYWORD GUIDE</p><h2>${esc(keyword)}</h2><dl><div><dt>Basic meaning</dt><dd>${esc(detail.meaning)}</dd></div><div><dt>In this lecture</dt><dd>${esc(detail.context)}</dd></div><div><dt>For your major</dt><dd>${esc(detail.major)}</dd></div><div><dt>Study tip</dt><dd>${esc(detail.studyTip)}</dd></div></dl></div></div>`)); }
 function submitQuizAnswer(quizId, answer) { noteState.quizAnswers[quizId] = answer; render(); }
 let pdfExportInProgress = false;
+let activePdfObjectUrl = null;
+function cleanupPdfObjectUrl() {
+  if (activePdfObjectUrl) {
+    try { URL.revokeObjectURL(activePdfObjectUrl); } catch (_) {}
+    activePdfObjectUrl = null;
+  }
+}
+window.addEventListener('beforeunload', cleanupPdfObjectUrl);
+
 function pdfLines(ctx, value, maxWidth) {
   const text = String(value || '—'); const lines = []; let line = '';
   for (const character of Array.from(text)) { const next = line + character; if (line && ctx.measureText(next).width > maxWidth) { lines.push(line.trimEnd()); line = character === ' ' ? '' : character; } else line = next; }
@@ -703,16 +712,60 @@ function smartNotePdfBlob(pages) {
   return new Blob([concatPdfBytes(parts)], { type: 'application/pdf' });
 }
 function setPdfButtonState(button, busy) { if (!button) return; button.dataset.pdfLabel ||= button.textContent; button.disabled = busy; button.textContent = busy ? ui('Generating PDF…', 'PDF 생성 중…') : button.dataset.pdfLabel; }
+function isMobileDevice() {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  const touchPoints = Number(navigator.maxTouchPoints || 0);
+  const mobileUa = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua);
+  const isIpadOs = /Macintosh/i.test(ua) && touchPoints > 1;
+  return mobileUa || isIpadOs || (window.matchMedia?.('(pointer: coarse)').matches && window.innerWidth <= 1024);
+}
 async function downloadNotePdf(note, button) {
   if (pdfExportInProgress || !note) return;
   button ||= document.activeElement?.matches('button') ? document.activeElement : null;
+  const isMobile = isMobileDevice();
+  let previewWindow = null;
+  if (isMobile) {
+    try { previewWindow = window.open('about:blank', '_blank'); } catch (_) {}
+  }
   pdfExportInProgress = true; setPdfButtonState(button, true);
   try {
     if (document.fonts?.ready) await document.fonts.ready;
     const blob = smartNotePdfBlob(smartNotePdfPages(note));
-    const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `${String(note.title || 'smart-note').replace(/[\\/:*?"<>|]/g, '_')}.pdf`; link.style.display = 'none'; document.body.append(link); link.click(); link.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-  } catch (_) { window.alert(ui('The PDF could not be created. Please try again.', 'PDF를 만들지 못했습니다. 다시 시도하세요.')); }
-  finally { pdfExportInProgress = false; setPdfButtonState(button, false); }
+    cleanupPdfObjectUrl();
+    const url = URL.createObjectURL(blob);
+    activePdfObjectUrl = url;
+    const filename = `${String(note.title || 'smart-note').replace(/[\\/:*?"<>|]/g, '_')}.pdf`;
+    if (isMobile) {
+      if (previewWindow && !previewWindow.closed) {
+        previewWindow.location.href = url;
+      } else {
+        const link = document.createElement('a');
+        link.href = url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.style.display = 'none';
+        document.body.append(link);
+        link.click();
+        link.remove();
+      }
+    } else {
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.style.display = 'none';
+      document.body.append(link);
+      link.click();
+      link.remove();
+    }
+  } catch (_) {
+    if (previewWindow && !previewWindow.closed) {
+      try { previewWindow.close(); } catch (_) {}
+    }
+    window.alert(ui('The PDF could not be created. Please try again.', 'PDF를 만들지 못했습니다. 다시 시도하세요.'));
+  } finally {
+    pdfExportInProgress = false; setPdfButtonState(button, false);
+  }
 }
 function schedule() { return renderSchedule(); }
 function scheduleDateLabel(date) { const value = new Date(`${date}T12:00:00`); return `${value.toLocaleString('en', { month: 'short' })} ${value.getDate()}`; }
