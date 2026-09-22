@@ -402,25 +402,80 @@ async function translateFinalSegment(session, segment, language, previousSegment
   }
 }
 function showSttNotice(message, isError = false) { const notice = document.querySelector('#stt-notice'); if (notice) notice.innerHTML = `${isError ? icon('alert-circle', { size: 'sm' }) : icon('activity', { size: 'sm' })} <span><strong>STT status:</strong> ${message}</span>`; }
-async function startStt() {
-  if (!lectureSession) return;
+async function initStt() {
+  if (!lectureSession) return null;
   const engine = useMockStt ? 'MOCK STT' : requestedSttMode === 'browser' ? 'BROWSER STT' : 'GOOGLE STT';
-  const track = lectureSession.originalStream.getAudioTracks()[0]; const settings = track?.getSettings?.() || {}; const sampleRateHertz = [8000, 12000, 16000, 24000, 48000].includes(settings.sampleRate) ? settings.sampleRate : 48000;
-  lectureSession.audioConfig = { languageCode: document.querySelector('#stt-input-language')?.value || 'ko-KR', encoding: 'WEBM_OPUS', sampleRateHertz, channelCount: 1, phraseHints: lectureSession.phraseHints || [] };
-  recordSttDebug('STT engine', engine); recordSttDebug('Audio format', `${lectureSession.audioConfig.encoding}, ${sampleRateHertz}Hz, mono`); recordSttDebug('STT glossary', `${lectureSession.course || 'No course'} · ${lectureSession.courseGlossary?.length || 0} term(s)`); recordSttDebug('STT phrase hints', `${lectureSession.audioConfig.phraseHints.length} course-relevant hint(s)`);
-  if (engine === 'GOOGLE STT' && !/webm/i.test(lectureSession.mimeType || '')) { const message = `Google STT requires WebM/Opus input, but this browser recorder selected ${lectureSession.mimeType || 'an unknown format'}. Audio recording continues.`; recordSttDebug('Google STT error', message); showSttNotice(message, true); return; }
+  const track = lectureSession.originalStream.getAudioTracks()[0];
+  const settings = track?.getSettings?.() || {};
+  const sampleRateHertz = [8000, 12000, 16000, 24000, 48000].includes(settings.sampleRate) ? settings.sampleRate : 48000;
+  lectureSession.audioConfig = {
+    languageCode: document.querySelector('#stt-input-language')?.value || 'ko-KR',
+    encoding: 'WEBM_OPUS',
+    sampleRateHertz,
+    channelCount: 1,
+    phraseHints: lectureSession.phraseHints || []
+  };
+  recordSttDebug('STT engine', engine);
+  recordSttDebug('Audio format', `${lectureSession.audioConfig.encoding}, ${sampleRateHertz}Hz, mono`);
+  recordSttDebug('STT glossary', `${lectureSession.course || 'No course'} · ${lectureSession.courseGlossary?.length || 0} term(s)`);
+  recordSttDebug('STT phrase hints', `${lectureSession.audioConfig.phraseHints.length} course-relevant hint(s)`);
+  if (engine === 'GOOGLE STT' && !/webm/i.test(lectureSession.mimeType || '')) {
+    const message = `Google STT requires WebM/Opus input, but this browser recorder selected ${lectureSession.mimeType || 'an unknown format'}. Audio recording continues.`;
+    recordSttDebug('Google STT error', message);
+    showSttNotice(message, true);
+    return null;
+  }
   lectureSession.sttStreamBaseMs = recordingAudioTimelineMs();
   lectureSession.sttService = getSttService();
-  if (typeof lectureSession.sttService.sendAudioChunk === 'function' && !lectureSession.audioChunkListenerAttached) { lectureSession.audioChunkListenerAttached = true; lectureSession.recorder.addEventListener('dataavailable', event => { if (!lectureSession?.firstAudioAt) lectureSession.firstAudioAt = performance.now(); lectureSession.lastAudioAt = performance.now(); const fallbackEndMs = recordingAudioTimelineMs(); const reportedStartMs = Number(event.timecode); const startMs = Number.isFinite(reportedStartMs) && reportedStartMs >= 0 ? reportedStartMs : lectureSession.mediaTimelineMs || 0; const endMs = Math.max(startMs, fallbackEndMs); lectureSession.mediaTimelineMs = Math.max(lectureSession.mediaTimelineMs || 0, endMs); lectureSession.sttService?.sendAudioChunk(event.data, { startMs, endMs }); }); }
+  if (typeof lectureSession.sttService.sendAudioChunk === 'function' && !lectureSession.audioChunkListenerAttached) {
+    lectureSession.audioChunkListenerAttached = true;
+    lectureSession.recorder.addEventListener('dataavailable', event => {
+      if (!lectureSession?.firstAudioAt) lectureSession.firstAudioAt = performance.now();
+      lectureSession.lastAudioAt = performance.now();
+      const fallbackEndMs = recordingAudioTimelineMs();
+      const reportedStartMs = Number(event.timecode);
+      const startMs = Number.isFinite(reportedStartMs) && reportedStartMs >= 0 ? reportedStartMs : lectureSession.mediaTimelineMs || 0;
+      const endMs = Math.max(startMs, fallbackEndMs);
+      lectureSession.mediaTimelineMs = Math.max(lectureSession.mediaTimelineMs || 0, endMs);
+      lectureSession.sttService?.sendAudioChunk(event.data, { startMs, endMs });
+    });
+  }
+  return lectureSession.sttService;
+}
+async function startSttStream(sttService = lectureSession?.sttService) {
+  if (!lectureSession || !sttService) return;
+  const engine = useMockStt ? 'MOCK STT' : requestedSttMode === 'browser' ? 'BROWSER STT' : 'GOOGLE STT';
   try {
-    await lectureSession.sttService.startStream({
-      onInterim: text => { const now = performance.now(); if (!lectureSession.firstInterimAt) { lectureSession.firstInterimAt = now; recordLatency('audio→first interim', lectureSession.firstAudioAt); } lectureSession.lastInterimAt = now; appendCaption('original', text, 'interim'); },
-      onFinal: (text, timing) => { const now = performance.now(); recordLatency('interim→final', lectureSession.lastInterimAt); handleFinalTranscript(text, now, timing); },
-      onStreamAudioBase: info => { if (!lectureSession) return; lectureSession.sttStreamBaseMs = info.streamBaseAudioOffsetMs; recordSttDebug('Google STT stream base', `stream=${info.streamSequence}; audio=${info.streamBaseAudioOffsetMs}ms`); },
-      onStart: () => { document.querySelector('#stt-mode').textContent = `STT Engine: ${engine} · connected`; showSttNotice(`${engine} is listening. Recording continues independently.`); },
-      onEnd: () => { if (lectureSession?.status === 'recording') showSttNotice(`${engine} connection ended. Limited reconnect may continue while recording stays active.`, true); },
+    await sttService.startStream({
+      onInterim: text => {
+        const now = performance.now();
+        if (!lectureSession.firstInterimAt) {
+          lectureSession.firstInterimAt = now;
+          recordLatency('audio→first interim', lectureSession.firstAudioAt);
+        }
+        lectureSession.lastInterimAt = now;
+        appendCaption('original', text, 'interim');
+      },
+      onFinal: (text, timing) => {
+        const now = performance.now();
+        recordLatency('interim→final', lectureSession.lastInterimAt);
+        handleFinalTranscript(text, now, timing);
+      },
+      onStreamAudioBase: info => {
+        if (!lectureSession) return;
+        lectureSession.sttStreamBaseMs = info.streamBaseAudioOffsetMs;
+        recordSttDebug('Google STT stream base', `stream=${info.streamSequence}; audio=${info.streamBaseAudioOffsetMs}ms`);
+      },
+      onStart: () => {
+        document.querySelector('#stt-mode').textContent = `STT Engine: ${engine} · connected`;
+        showSttNotice(`${engine} is listening. Recording continues independently.`);
+      },
+      onEnd: () => {
+        if (lectureSession?.status === 'recording') showSttNotice(`${engine} connection ended. Limited reconnect may continue while recording stays active.`, true);
+      },
       onError: reason => {
-        console.warn('Study Mate STT error:', reason); showSttNotice(`Live caption connection error: ${reason}. Audio recording continues.`, true);
+        console.warn('Study Mate STT error:', reason);
+        showSttNotice(`Live caption connection error: ${reason}. Audio recording continues.`, true);
       },
       onDebug: recordSttDebug,
       audioConfig: lectureSession.audioConfig
@@ -432,19 +487,25 @@ async function startStt() {
     showSttNotice(`${err.message} Audio recording continues without captions.`, true);
   }
 }
+async function startStt() {
+  const service = await initStt();
+  if (service) await startSttStream(service);
+}
 async function handleLectureAction(action) {
   if (action === 'start') {
     try {
       resetSttDebug(); recordSttDebug('Recording start requested');
       document.querySelector('#lecture-error').hidden = true; setLectureStatus('Requesting microphone…', 'requesting');
       const capture = await recordingService.start();
-       const currentCourse = selectedCourse(); const title = document.querySelector('#lecture-title')?.value.trim() || lectureTitleForCourse(currentCourse?.name);
-       const courseGlossary = await glossaryService.findForCourse(currentCourse); lectureSession = { ...capture, id: crypto.randomUUID?.() || String(Date.now()), title, courseId: currentCourse?.id || null, course: currentCourse?.name || '', courseContext: currentCourse, courseGlossary, phraseHints: phraseHintsFromGlossary(currentCourse, courseGlossary), status: 'recording', startedAt: Date.now(), pausedAt: null, pausedMs: 0, timelineStartedAt: performance.now(), timelinePausedAt: null, timelinePausedMs: 0, mediaTimelineMs: 0, sttStreamBaseMs: 0, lastTranscriptEndMs: 0, timingVersion: 2, transcript: [], translations: [], segments: [], causalSegments: [], translatedSegmentIds: new Set(), queuedSegmentIds: new Set(), finalTranscriptKeys: new Set(), translationCache: new Map(), translationQueue: [], translationActive: 0, nextSegmentSequence: 1 };
+      const currentCourse = selectedCourse(); const title = document.querySelector('#lecture-title')?.value.trim() || lectureTitleForCourse(currentCourse?.name);
+      const courseGlossary = await glossaryService.findForCourse(currentCourse); lectureSession = { ...capture, id: crypto.randomUUID?.() || String(Date.now()), title, courseId: currentCourse?.id || null, course: currentCourse?.name || '', courseContext: currentCourse, courseGlossary, phraseHints: phraseHintsFromGlossary(currentCourse, courseGlossary), status: 'recording', startedAt: Date.now(), pausedAt: null, pausedMs: 0, timelineStartedAt: performance.now(), timelinePausedAt: null, timelinePausedMs: 0, mediaTimelineMs: 0, sttStreamBaseMs: 0, lastTranscriptEndMs: 0, timingVersion: 2, transcript: [], translations: [], segments: [], causalSegments: [], translatedSegmentIds: new Set(), queuedSegmentIds: new Set(), finalTranscriptKeys: new Set(), translationCache: new Map(), translationQueue: [], translationActive: 0, nextSegmentSequence: 1 };
       lectureSession.nextTranslationBatchSequence = 1;
+      const sttService = await initStt();
+      const sttPromise = sttService ? startSttStream(sttService) : Promise.resolve();
       capture.recorder.start(250); recordSttDebug('MediaRecorder started', '250 ms chunks'); setLectureStatus('Recording', 'allowed');
       const controls = getLectureControls(); controls.start.disabled = true; controls.pause.disabled = false; controls.stop.disabled = false; controls.course.disabled = controls.title.disabled = true;
       lectureSession.timer = setInterval(updateTimer, 250);
-      await startStt();
+      await sttPromise;
     } catch (err) {
       const denied = err.name === 'NotAllowedError' || err.name === 'SecurityError';
       setLectureStatus('Recording unavailable', denied ? 'denied' : 'unavailable');
