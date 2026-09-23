@@ -206,6 +206,7 @@ async function generateSmartNoteWithGemini({ lecture, transcript, student, langu
     contents: prompt,
     config: {
       temperature: 0.2,
+      thinkingConfig: { thinkingBudget: 0 },
       responseMimeType: 'application/json',
       responseJsonSchema: {
         type: 'object',
