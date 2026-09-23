@@ -633,10 +633,14 @@ async function translateExistingSmartNote(sourceNote, targetLanguage, lecture) {
     (quiz.options || []).forEach((opt, oIdx) => addUnit(`quiz_opt_${qIdx}_${oIdx}`, opt));
   });
 
-  const translationMap = new Map();
   const chunkSize = 12;
+  const chunkList = [];
   for (let i = 0; i < textUnits.length; i += chunkSize) {
-    const chunk = textUnits.slice(i, i + chunkSize);
+    chunkList.push(textUnits.slice(i, i + chunkSize));
+  }
+
+  const chunkPromises = chunkList.map(async chunk => {
+    const chunkMap = new Map();
     try {
       const res = await translationService.translateSegments(
         chunk.map(u => ({ id: u.id, content: u.text })),
@@ -647,7 +651,7 @@ async function translateExistingSmartNote(sourceNote, targetLanguage, lecture) {
       if (Array.isArray(res?.segments)) {
         res.segments.forEach(seg => {
           const trans = targetLanguage === 'ko' ? (seg.correctedKorean || seg.translatedText) : (seg.translatedText || seg.correctedKorean);
-          translationMap.set(seg.id, trans || seg.text);
+          chunkMap.set(seg.id, trans || seg.text);
         });
       }
     } catch (_) {
@@ -655,13 +659,22 @@ async function translateExistingSmartNote(sourceNote, targetLanguage, lecture) {
         try {
           const single = await translationService.translate(item.text, targetLanguage, glossary, courseContext);
           const trans = targetLanguage === 'ko' ? (single.correctedKorean || single.translatedText) : (single.translatedText || single.correctedKorean);
-          translationMap.set(item.id, trans || item.text);
+          chunkMap.set(item.id, trans || item.text);
         } catch (_) {
-          translationMap.set(item.id, item.text);
+          chunkMap.set(item.id, item.text);
         }
       }
     }
-  }
+    return chunkMap;
+  });
+
+  const resolvedMaps = await Promise.all(chunkPromises);
+  const translationMap = new Map();
+  resolvedMaps.forEach(map => {
+    for (const [id, val] of map.entries()) {
+      translationMap.set(id, val);
+    }
+  });
 
   const getTrans = (id, fallback = '') => (translationMap.get(id) || fallback).trim();
 
