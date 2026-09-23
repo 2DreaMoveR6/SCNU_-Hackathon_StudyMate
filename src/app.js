@@ -639,40 +639,79 @@ async function translateExistingSmartNote(sourceNote, targetLanguage, lecture) {
     chunkList.push(textUnits.slice(i, i + chunkSize));
   }
 
-  const chunkPromises = chunkList.map(async chunk => {
+  const isRateLimitError = err => {
+    const msg = String(err?.message || '').toLowerCase();
+    const code = String(err?.code || '').toLowerCase();
+    return code === 'quota-or-rate-limit' || /429|resource_exhausted|quota|rate limit/i.test(msg);
+  };
+
+  const executeChunk = async chunk => {
     const chunkMap = new Map();
-    try {
-      const res = await translationService.translateSegments(
+    const performBatch = async () => {
+      return await translationService.translateSegments(
         chunk.map(u => ({ id: u.id, content: u.text })),
         targetLanguage,
         glossary,
         courseContext
       );
-      if (Array.isArray(res?.segments)) {
-        res.segments.forEach(seg => {
-          const trans = targetLanguage === 'ko' ? (seg.correctedKorean || seg.translatedText) : (seg.translatedText || seg.correctedKorean);
-          chunkMap.set(seg.id, trans || seg.text);
-        });
-      }
-    } catch (_) {
-      for (const item of chunk) {
+    };
+
+    let res = null;
+    try {
+      res = await performBatch();
+    } catch (err) {
+      if (isRateLimitError(err)) {
+        await new Promise(resolve => setTimeout(resolve, 600 + Math.random() * 400));
         try {
-          const single = await translationService.translate(item.text, targetLanguage, glossary, courseContext);
-          const trans = targetLanguage === 'ko' ? (single.correctedKorean || single.translatedText) : (single.translatedText || single.correctedKorean);
-          chunkMap.set(item.id, trans || item.text);
+          res = await performBatch();
         } catch (_) {
-          chunkMap.set(item.id, item.text);
+          res = null;
         }
       }
     }
-    return chunkMap;
-  });
 
-  const resolvedMaps = await Promise.all(chunkPromises);
+    if (Array.isArray(res?.segments)) {
+      res.segments.forEach(seg => {
+        const trans = targetLanguage === 'ko' ? (seg.correctedKorean || seg.translatedText) : (seg.translatedText || seg.correctedKorean);
+        chunkMap.set(seg.id, trans || seg.text);
+      });
+      return chunkMap;
+    }
+
+    // Fallback to single translations for this chunk if batch fails
+    for (const item of chunk) {
+      try {
+        const single = await translationService.translate(item.text, targetLanguage, glossary, courseContext);
+        const trans = targetLanguage === 'ko' ? (single.correctedKorean || single.translatedText) : (single.translatedText || single.correctedKorean);
+        chunkMap.set(item.id, trans || item.text);
+      } catch (_) {
+        chunkMap.set(item.id, item.text);
+      }
+    }
+    return chunkMap;
+  };
+
+  // Run chunks with max concurrency = 2
+  const maxConcurrency = 2;
+  const resolvedMaps = new Array(chunkList.length);
+  let nextChunkIndex = 0;
+
+  const worker = async () => {
+    while (nextChunkIndex < chunkList.length) {
+      const currentIndex = nextChunkIndex++;
+      resolvedMaps[currentIndex] = await executeChunk(chunkList[currentIndex]);
+    }
+  };
+
+  const workers = Array.from({ length: Math.min(maxConcurrency, chunkList.length) }, () => worker());
+  await Promise.all(workers);
+
   const translationMap = new Map();
   resolvedMaps.forEach(map => {
-    for (const [id, val] of map.entries()) {
-      translationMap.set(id, val);
+    if (map) {
+      for (const [id, val] of map.entries()) {
+        translationMap.set(id, val);
+      }
     }
   });
 
