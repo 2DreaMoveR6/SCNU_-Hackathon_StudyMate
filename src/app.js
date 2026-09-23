@@ -543,15 +543,13 @@ function smartNoteSkeleton() {
 
 reviewNote = function reviewNoteWithRestoredContent(recording, note) {
   if (!note) return reviewEmptyNote(recording);
+  const isTranslatingThisNote = noteState.localization.status === 'localizing' && noteState.localization.noteId === note.id;
   if (note.contentLanguage !== appLanguage) {
     if (applyNoteVersion(note, appLanguage)) {
       persistAppState();
-    } else if (noteState.localization.status !== 'localizing') {
+    } else if (!isTranslatingThisNote) {
       noteState.selectedLectureId = recording.id;
       localizeSelectedNote(appLanguage, note.contentLanguage || 'en');
-      return smartNoteSkeleton();
-    } else {
-      return smartNoteSkeleton();
     }
   }
   const editing = noteState.editing && noteState.selectedLectureId === recording.id;
@@ -560,7 +558,8 @@ reviewNote = function reviewNoteWithRestoredContent(recording, note) {
     ? '<button class="button secondary" data-note-action="cancel">Cancel</button><button class="button" data-note-action="save">Save</button>'
     : `<button class="button secondary" data-review-action="edit-note">${ui('Edit', '편집')}</button><button class="button secondary" data-review-action="pdf-note">${ui('Save PDF', 'PDF 저장')}</button><button class="button danger" data-note-action="delete-lecture">${ui('Delete lecture', '강의 삭제')}</button>`;
   const studyTips = (note.studyTips || note.reviewPoints || []).map(point => `<li>${esc(point)}</li>`).join('');
-  return `<div class="review-note"><div class="review-note-head"><div><p class="tag">SMART NOTE</p><h2>${esc(note.title || recording.title)}</h2></div><div class="note-actions">${actions}</div></div>${noteContents(note, { reveal })}${editing ? '' : `<section class="note-section${reveal ? ' note-reveal' : ''}" ${reveal ? 'style="--note-reveal-delay:180ms"' : ''}><h3>${ui('Study tips', '학습 팁')}</h3><ul>${studyTips}</ul></section><section class="note-section quiz-section${reveal ? ' note-reveal' : ''}" ${reveal ? 'style="--note-reveal-delay:240ms"' : ''}><div class="section-title"><h3>${ui('Review quiz', '복습 퀴즈')}</h3><span>${ui('Instant feedback', '즉시 채점')}</span></div>${noteQuizzes(note)}</section>`}</div>`;
+  const translatingBanner = isTranslatingThisNote ? `<div class="note-translating-banner" role="status" aria-live="polite"><span class="inline-spinner"></span> <span>${ui('Translating note…', '노트를 번역하고 있습니다…')}</span></div>` : '';
+  return `<div class="review-note">${translatingBanner}<div class="review-note-head"><div><p class="tag">SMART NOTE</p><h2>${esc(note.title || recording.title)}</h2></div><div class="note-actions">${actions}</div></div>${noteContents(note, { reveal })}${editing ? '' : `<section class="note-section${reveal ? ' note-reveal' : ''}" ${reveal ? 'style="--note-reveal-delay:180ms"' : ''}><h3>${ui('Study tips', '학습 팁')}</h3><ul>${studyTips}</ul></section><section class="note-section quiz-section${reveal ? ' note-reveal' : ''}" ${reveal ? 'style="--note-reveal-delay:240ms"' : ''}><div class="section-title"><h3>${ui('Review quiz', '복습 퀴즈')}</h3><span>${ui('Instant feedback', '즉시 채점')}</span></div>${noteQuizzes(note)}</section>`}</div>`;
 };
 
 const handleExistingReviewAction = handleReviewAction;
@@ -792,7 +791,7 @@ async function handleNoteAction(action, element) {
         const { timing, ...note } = generated; created = note; metric.geminiRequests = 1; Object.assign(metric, timing || {});
         smartNoteCache.set(cacheKey, structuredClone(created));
       }
-      created.course = lecture.course; created.courseId = lecture.courseId || null; created.generationVersion = 2; created.reviewPoints = created.studyTips || created.reviewPoints || []; if (!created.quizzes) created.quizzes = await quizGenerator.generate(created); created.contentLanguage = appLanguage; created.sourceLanguage = appLanguage; created.localizedVersions = {}; saveNoteVersion(created, appLanguage); noteState.notes[lecture.id] = created; noteState.quizAnswers = {}; metric.cacheSavedAt = performance.now(); noteState.revealLectureId = lecture.id; noteState.generation = { status: 'success', lectureId: lecture.id, error: '' };
+      created.course = lecture.course; created.courseId = lecture.courseId || null; created.generationVersion = 2; created.reviewPoints = created.studyTips || created.reviewPoints || []; if (!created.quizzes) created.quizzes = await quizGenerator.generate(created); created.contentLanguage = appLanguage; created.sourceLanguage = appLanguage; created.localizedVersions = {}; saveNoteVersion(created, appLanguage); noteState.notes[lecture.id] = created; noteState.quizAnswers = {}; persistAppState(); metric.cacheSavedAt = performance.now(); noteState.revealLectureId = lecture.id; noteState.generation = { status: 'success', lectureId: lecture.id, error: '' };
     } catch (generationError) { noteState.generation = { status: 'error', lectureId: lecture.id, error: generationError.message || (appLanguage === 'ko' ? 'Smart Note를 생성할 수 없습니다.' : 'Smart Note could not be generated.') }; }
     render();
     if (noteState.generation.status === 'success') requestAnimationFrame(() => { metric.noteRenderedAt = performance.now(); recordSmartNoteMetric(metric); requestAnimationFrame(() => { noteState.revealLectureId = null; }); });
