@@ -598,24 +598,169 @@ const noteVersionFields = ['title', 'summary', 'keyPoints', 'keySentences', 'key
 function cloneNoteContent(note) { return Object.fromEntries(noteVersionFields.map(field => [field, structuredClone(note[field])])) ; }
 function saveNoteVersion(note, language) { if (!note || !language) return; note.localizedVersions ||= {}; note.localizedVersions[language] = cloneNoteContent(note); }
 function applyNoteVersion(note, language) { const version = note?.localizedVersions?.[language]; if (!version) return false; Object.assign(note, structuredClone(version), { contentLanguage: language }); return true; }
+async function translateExistingSmartNote(sourceNote, targetLanguage, lecture) {
+  const translationService = getTranslationService();
+  const courseContext = { course: lecture?.course || sourceNote.course || '' };
+  const glossary = await glossaryService.findRelevant(sourceNote.summary || (sourceNote.keyPoints || []).join(' '));
+  
+  const textUnits = [];
+  const addUnit = (id, text) => {
+    const clean = String(text || '').trim();
+    textUnits.push({ id, text: clean || ' ' });
+  };
+
+  addUnit('title', sourceNote.title || lecture?.title || 'Smart Note');
+  addUnit('summary', sourceNote.summary || '');
+  
+  (sourceNote.keyPoints || []).forEach((point, idx) => addUnit(`kp_${idx}`, point));
+  (sourceNote.keySentences || []).forEach((sentence, idx) => addUnit(`ks_${idx}`, sentence));
+  (sourceNote.studyTips || sourceNote.reviewPoints || []).forEach((tip, idx) => addUnit(`st_${idx}`, tip));
+  (sourceNote.reviewPoints || []).forEach((rp, idx) => addUnit(`rp_${idx}`, rp));
+  
+  const keywords = Array.isArray(sourceNote.keywords) ? sourceNote.keywords : [];
+  keywords.forEach((kw, idx) => {
+    addUnit(`kw_${idx}`, kw);
+    const detail = sourceNote.keywordDetails?.[kw] || {};
+    addUnit(`kwd_meaning_${idx}`, detail.meaning || '');
+    addUnit(`kwd_context_${idx}`, detail.context || '');
+    addUnit(`kwd_major_${idx}`, detail.major || '');
+    addUnit(`kwd_tip_${idx}`, detail.studyTip || '');
+  });
+
+  const quizzes = Array.isArray(sourceNote.quizzes) ? sourceNote.quizzes : [];
+  quizzes.forEach((quiz, qIdx) => {
+    addUnit(`quiz_q_${qIdx}`, quiz.question || '');
+    addUnit(`quiz_exp_${qIdx}`, quiz.explanation || '');
+    (quiz.options || []).forEach((opt, oIdx) => addUnit(`quiz_opt_${qIdx}_${oIdx}`, opt));
+  });
+
+  const translationMap = new Map();
+  const chunkSize = 12;
+  for (let i = 0; i < textUnits.length; i += chunkSize) {
+    const chunk = textUnits.slice(i, i + chunkSize);
+    try {
+      const res = await translationService.translateSegments(
+        chunk.map(u => ({ id: u.id, content: u.text })),
+        targetLanguage,
+        glossary,
+        courseContext
+      );
+      if (Array.isArray(res?.segments)) {
+        res.segments.forEach(seg => {
+          const trans = targetLanguage === 'ko' ? (seg.correctedKorean || seg.translatedText) : (seg.translatedText || seg.correctedKorean);
+          translationMap.set(seg.id, trans || seg.text);
+        });
+      }
+    } catch (_) {
+      for (const item of chunk) {
+        try {
+          const single = await translationService.translate(item.text, targetLanguage, glossary, courseContext);
+          const trans = targetLanguage === 'ko' ? (single.correctedKorean || single.translatedText) : (single.translatedText || single.correctedKorean);
+          translationMap.set(item.id, trans || item.text);
+        } catch (_) {
+          translationMap.set(item.id, item.text);
+        }
+      }
+    }
+  }
+
+  const getTrans = (id, fallback = '') => (translationMap.get(id) || fallback).trim();
+
+  const translatedKeyPoints = (sourceNote.keyPoints || []).map((orig, idx) => getTrans(`kp_${idx}`, orig));
+  const translatedKeySentences = (sourceNote.keySentences || []).map((orig, idx) => getTrans(`ks_${idx}`, orig));
+  const translatedStudyTips = (sourceNote.studyTips || sourceNote.reviewPoints || []).map((orig, idx) => getTrans(`st_${idx}`, orig));
+  const translatedReviewPoints = (sourceNote.reviewPoints || []).map((orig, idx) => getTrans(`rp_${idx}`, orig));
+
+  const translatedKeywords = [];
+  const translatedKeywordDetails = {};
+  keywords.forEach((kw, idx) => {
+    const origDetail = sourceNote.keywordDetails?.[kw] || {};
+    const transKw = getTrans(`kw_${idx}`, kw);
+    translatedKeywords.push(transKw);
+    translatedKeywordDetails[transKw] = {
+      meaning: getTrans(`kwd_meaning_${idx}`, origDetail.meaning),
+      context: getTrans(`kwd_context_${idx}`, origDetail.context),
+      major: getTrans(`kwd_major_${idx}`, origDetail.major),
+      studyTip: getTrans(`kwd_tip_${idx}`, origDetail.studyTip)
+    };
+  });
+
+  const translatedQuizzes = quizzes.map((quiz, qIdx) => {
+    const transQ = getTrans(`quiz_q_${qIdx}`, quiz.question);
+    const transExp = getTrans(`quiz_exp_${qIdx}`, quiz.explanation);
+    let transOptions;
+    let transAnswer;
+
+    if (quiz.type === 'OX') {
+      transOptions = ['O', 'X'];
+      transAnswer = quiz.answer === 'O' ? 'O' : 'X';
+    } else {
+      transOptions = (quiz.options || []).map((opt, oIdx) => getTrans(`quiz_opt_${qIdx}_${oIdx}`, opt));
+      const origAnswerIndex = (quiz.options || []).indexOf(quiz.answer);
+      transAnswer = (origAnswerIndex >= 0 && transOptions[origAnswerIndex]) ? transOptions[origAnswerIndex] : (transOptions[0] || quiz.answer);
+    }
+
+    return {
+      id: quiz.id || `quiz-${Date.now()}-${qIdx}`,
+      type: quiz.type,
+      question: transQ,
+      options: transOptions,
+      answer: transAnswer,
+      explanation: transExp
+    };
+  });
+
+  return {
+    ...sourceNote,
+    title: getTrans('title', sourceNote.title),
+    summary: getTrans('summary', sourceNote.summary),
+    keyPoints: translatedKeyPoints,
+    keySentences: translatedKeySentences,
+    keywords: translatedKeywords,
+    keywordDetails: translatedKeywordDetails,
+    studyTips: translatedStudyTips,
+    reviewPoints: translatedReviewPoints,
+    quizzes: translatedQuizzes,
+    contentLanguage: targetLanguage,
+    sourceLanguage: sourceNote.sourceLanguage || sourceNote.contentLanguage || targetLanguage
+  };
+}
+
+let activeLocalizationId = 0;
 async function localizeSelectedNote(language, previousLanguage) {
   const lecture = noteLectures().find(item => item.id === noteState.selectedLectureId);
   const note = lecture && noteState.notes[lecture.id];
-  if (!note || note.contentLanguage === language || applyNoteVersion(note, language)) return;
+  if (!note || note.contentLanguage === language || applyNoteVersion(note, language)) {
+    persistAppState();
+    return;
+  }
   if (noteState.localization.status === 'localizing' && noteState.localization.noteId === note.id && noteState.localization.language === language) return;
+  
   saveNoteVersion(note, note.contentLanguage || note.sourceLanguage || previousLanguage || appLanguage);
+  persistAppState();
+  
+  const currentRequestId = ++activeLocalizationId;
   noteState.localization = { status: 'localizing', noteId: note.id, language, error: '' };
   render();
+  
   try {
-    const glossary = await glossaryService.findRelevant(lecture.transcript.join(' '));
-    const localized = await noteGenerator.generate({ lecture, transcript: lecture.transcript, student, language, glossary });
-    localized.course = lecture.course; localized.courseId = lecture.courseId || null;
+    const localized = await translateExistingSmartNote(note, language, lecture);
+    if (activeLocalizationId !== currentRequestId || appLanguage !== language) return;
+    
+    localized.course = lecture.course;
+    localized.courseId = lecture.courseId || null;
     localized.reviewPoints = localized.studyTips || localized.reviewPoints || [];
-    Object.assign(note, cloneNoteContent(localized), { contentLanguage: language, sourceLanguage: note.sourceLanguage || note.contentLanguage || language });
+    
+    Object.assign(note, cloneNoteContent(localized), {
+      contentLanguage: language,
+      sourceLanguage: note.sourceLanguage || note.contentLanguage || language
+    });
     saveNoteVersion(note, language);
+    persistAppState();
     noteState.localization = { status: 'success', noteId: note.id, language, error: '' };
   } catch (error) {
-    noteState.localization = { status: 'error', noteId: note.id, language, error: error.message || 'Note localization failed.' };
+    if (activeLocalizationId !== currentRequestId) return;
+    noteState.localization = { status: 'error', noteId: note.id, language, error: error.message || 'Note translation failed.' };
   }
   render();
 }
