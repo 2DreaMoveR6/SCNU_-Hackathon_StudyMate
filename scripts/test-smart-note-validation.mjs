@@ -7,7 +7,8 @@ const validatorStart = serverSource.indexOf('function isTargetLanguageDominantPr
 const validatorEnd = serverSource.indexOf('async function generateSmartNoteWithGemini', validatorStart);
 assert.ok(validatorStart >= 0 && validatorEnd > validatorStart, 'Smart Note validator source must be available.');
 
-const context = {};
+const validationLogs = [];
+const context = { console: { warn: entry => validationLogs.push(String(entry)) } };
 vm.runInNewContext(`${serverSource.slice(validatorStart, validatorEnd)}\nglobalThis.validateSmartNote = validateSmartNote;`, context);
 
 const frontendSource = readFileSync(new URL('../src/services/index.js', import.meta.url), 'utf8');
@@ -72,6 +73,15 @@ const koreanWithEnglishTechnicalTerm = koreanNote('JavaScript');
 koreanWithEnglishTechnicalTerm.summary = '강의는 JavaScript 자료구조를 자세히 다룹니다.';
 assert.doesNotThrow(() => context.validateSmartNote(koreanWithEnglishTechnicalTerm, 'ko'));
 assert.throws(() => context.validateSmartNote(englishNote('이 강의는 자료구조와 SQL을 다룹니다.'), 'en'), /title or summary/);
+validationLogs.length = 0;
+const diagnosticSummary = 'SQL 자료구조';
+assert.throws(() => context.validateSmartNote(englishNote(diagnosticSummary), 'en'), /title or summary/);
+const summaryDiagnostic = JSON.parse(validationLogs.at(-1));
+assert.deepEqual(summaryDiagnostic, {
+  event: 'smart-note-validation-failed', stage: 'title-summary', field: 'summary', reason: 'target-language-not-dominant', language: 'en',
+  englishChunkCount: 1, koreanChunkCount: 1, englishLetterCount: 3, koreanSyllableCount: 4
+});
+assert.equal(JSON.stringify(summaryDiagnostic).includes(diagnosticSummary), false, 'Summary content must never be logged.');
 const englishOnlyKoreanNote = koreanNote('JavaScript');
 englishOnlyKoreanNote.summary = 'This lecture explains JavaScript concepts.';
 assert.throws(() => context.validateSmartNote(englishOnlyKoreanNote, 'ko'), /title or summary/);

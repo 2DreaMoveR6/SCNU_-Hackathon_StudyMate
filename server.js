@@ -191,6 +191,15 @@ function isTargetLanguageDominantProse(value, language) {
     ? koreanChunks > 0 && koreanChunks > englishChunks
     : englishChunks > 0 && englishChunks > koreanChunks;
 }
+function englishProseDiagnosticCounts(value) {
+  const text = String(value || '').trim();
+  return {
+    englishChunkCount: (text.match(/[A-Za-z]+/g) || []).length,
+    koreanChunkCount: (text.match(/[가-힣]+/g) || []).length,
+    englishLetterCount: (text.match(/[A-Za-z]/g) || []).length,
+    koreanSyllableCount: (text.match(/[가-힣]/g) || []).length
+  };
+}
 function isMeaningfulMixedTechnicalLabel(value) {
   const text = String(value || '').trim();
   return Boolean(text) && /[A-Za-z가-힣]/.test(text);
@@ -245,16 +254,17 @@ function normalizedQuizType(value) {
   const type = normalizedComparisonKey(value).toUpperCase();
   return type === 'OX' || type === 'MC' ? type : null;
 }
-function smartNoteValidationError(message, { stage, field, reason, index, language }) {
+function smartNoteValidationError(message, { stage, field, reason, index, language, diagnosticCounts }) {
   const entry = { event: 'smart-note-validation-failed', stage, field, reason, language };
   if (Number.isInteger(index)) entry.index = index;
+  if (diagnosticCounts) Object.assign(entry, diagnosticCounts);
   console.warn(JSON.stringify(entry));
   return Object.assign(new Error(message), { code: 'invalid-smart-note' });
 }
 function validateSmartNote(value, language) {
   if (!value) throw smartNoteValidationError('Gemini Smart Note title or summary did not match the selected language.', { stage: 'title-summary', field: 'note', reason: 'missing', language });
   if (!isMeaningfulMixedTechnicalLabel(value.title)) throw smartNoteValidationError('Gemini Smart Note title or summary did not match the selected language.', { stage: 'title-summary', field: 'title', reason: 'meaningful-label-required', language });
-  if (!isTargetLanguageDominantProse(value.summary, language)) throw smartNoteValidationError('Gemini Smart Note title or summary did not match the selected language.', { stage: 'title-summary', field: 'summary', reason: 'target-language-not-dominant', language });
+  if (!isTargetLanguageDominantProse(value.summary, language)) throw smartNoteValidationError('Gemini Smart Note title or summary did not match the selected language.', { stage: 'title-summary', field: 'summary', reason: 'target-language-not-dominant', language, diagnosticCounts: language === 'en' ? englishProseDiagnosticCounts(value.summary) : undefined });
   if (!Array.isArray(value.keywords) || !value.keywords.length) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'keywords', reason: 'missing', language });
   for (let index = 0; index < value.keywords.length; index += 1) {
     const item = value.keywords[index];
