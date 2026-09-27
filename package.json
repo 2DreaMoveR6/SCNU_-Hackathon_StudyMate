@@ -6,7 +6,10 @@
     "build": "node scripts/build.js",
     "start": "node server.js",
     "check": "node --check server.js && node --check src/app.js && node --check src/services/index.js",
-    "test:schedule": "node scripts/test-schedule-date.mjs"
+    "test:schedule": "node scripts/test-schedule-date.mjs",
+    "test:captions": "node scripts/test-caption-state.mjs",
+    "test:translation-routing": "node scripts/test-translation-routing.mjs",
+    "test:schedule-dedup": "node scripts/test-schedule-dedup.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.37.0",

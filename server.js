@@ -102,7 +102,7 @@ function translationFailure(error) {
   if (/deadline|timeout/i.test(detail)) return { status: 504, code: 'timeout', message: 'Gemini translation timed out.' };
   return { status: 502, code: 'gemini-request-failed', message: 'Gemini translation request failed.' };
 }
-async function translateWithGemini({ text, targetLanguage, glossary, previousSegments, course }) {
+async function translateWithGemini({ text, sourceLanguage = 'ko', targetLanguage, glossary, previousSegments, course }) {
   if (typeof text !== 'string' || !text.trim()) throw Object.assign(new Error('A final transcript is required.'), { code: 'invalid-input' });
   const target = targetLanguage === 'ko' ? 'Korean' : 'English';
   const relevantGlossary = Array.isArray(glossary) ? glossary.slice(0, 6).map(item => ({ term: String(item.term || '').slice(0, 80), meaning: String(item.meaning || '').slice(0, 180) })).filter(item => item.term) : [];
@@ -110,15 +110,21 @@ async function translateWithGemini({ text, targetLanguage, glossary, previousSeg
   const safeCourse = String(course || '').trim().slice(0, 120);
   const prompt = [
     'You are a real-time lecture translator for an international student.',
-    targetLanguage === 'ko'
-      ? 'Translate the input lecture transcript accurately into natural Korean. Correct only clear speech-to-text recognition errors. When uncertain, preserve the original meaning faithfully.'
+    sourceLanguage === targetLanguage
+      ? `The source and target language are both ${target}. Do not translate or substitute another language. Preserve the transcript as a natural ${target} subtitle; do not summarize, invent, omit, or rewrite content except to correct a clear speech-to-text error.`
+      : sourceLanguage === 'en' && targetLanguage === 'ko'
+      ? 'The source transcript is English. Translate it into natural Korean subtitle language. Preserve names, numbers, technical terms, and the original meaning. Do not summarize, invent, omit, or rewrite content except to correct a clear speech-to-text error.'
       : 'Correct only clear Korean STT mistakes, especially a glossary term that is phonetically similar and unambiguously supported by the course context. Preserve all correct wording, sentence form, and lecture meaning. When uncertain, retain the raw Korean; do not rewrite, add explanations, facts, or examples.',
     `Target language: ${target}.`,
     `Lecture transcript input: ${text.trim()}`,
     `Current course: ${safeCourse}`,
     `Relevant glossary: ${JSON.stringify(relevantGlossary)}`,
     `Previous stable segments (context only, do not repeat): ${JSON.stringify(recentContext)}`,
-    'Return only the requested JSON fields. correctedKorean must be Korean (either corrected input or the translated Korean if target is Korean). translatedText must be the natural target-language subtitle.'
+    sourceLanguage === targetLanguage
+      ? `Return only the requested JSON fields. translatedText must be ${target} only and must preserve the source transcript. correctedKorean must be a non-empty compatibility copy of that subtitle.`
+      : sourceLanguage === 'en' && targetLanguage === 'ko'
+      ? 'Return only the requested JSON fields. correctedKorean and translatedText must be Korean only.'
+      : 'Return only the requested JSON fields. correctedKorean must be Korean (either corrected input or the translated Korean if target is Korean). translatedText must be the natural target-language subtitle.'
   ].join('\n');
   const response = await getGeminiClient().models.generateContent({
     model: geminiModel,
@@ -143,24 +149,30 @@ async function translateWithGemini({ text, targetLanguage, glossary, previousSeg
   if (typeof value.correctedKorean !== 'string' || typeof value.translatedText !== 'string' || !value.correctedKorean.trim() || !value.translatedText.trim()) throw Object.assign(new Error('Gemini response did not include translation fields.'), { code: 'invalid-response' });
   return { correctedKorean: value.correctedKorean.trim(), translatedText: value.translatedText.trim(), model: geminiModel };
 }
-async function translateSegmentsWithGemini({ segments, targetLanguage, glossary, previousSegments, course }) {
+async function translateSegmentsWithGemini({ segments, sourceLanguage = 'ko', targetLanguage, glossary, previousSegments, course }) {
   const source = Array.isArray(segments) ? segments.map(segment => ({ id: String(segment?.id || '').trim(), text: String(segment?.text || '').trim() })).filter(segment => segment.id && segment.text).slice(0, 12) : [];
   if (!source.length) throw Object.assign(new Error('Final transcript segments are required.'), { code: 'invalid-input' });
-  if (source.length === 1) { const result = await translateWithGemini({ text: source[0].text, targetLanguage, glossary, previousSegments, course }); return { segments: [{ id: source[0].id, ...result }], model: result.model }; }
+  if (source.length === 1) { const result = await translateWithGemini({ text: source[0].text, sourceLanguage, targetLanguage, glossary, previousSegments, course }); return { segments: [{ id: source[0].id, ...result }], model: result.model }; }
   const target = targetLanguage === 'ko' ? 'Korean' : 'English';
   const relevantGlossary = Array.isArray(glossary) ? glossary.slice(0, 6).map(item => ({ term: String(item.term || '').slice(0, 80), meaning: String(item.meaning || '').slice(0, 180) })).filter(item => item.term) : [];
   const recentContext = Array.isArray(previousSegments) ? previousSegments.slice(-2).map(segment => String(segment || '').trim().slice(0, 240)).filter(Boolean) : [];
   const prompt = [
     'You are a real-time lecture translator for an international student.',
-    targetLanguage === 'ko'
-      ? 'Translate every supplied STT segment accurately into natural Korean. Correct only clear speech-to-text recognition errors. Preserve the input order and IDs. Do not merge, omit, split, or add segments. When uncertain, retain original meaning.'
+    sourceLanguage === targetLanguage
+      ? `The source and target language are both ${target}. Do not translate or substitute another language. Preserve every segment as a natural ${target} subtitle with the same order and IDs. Do not summarize, invent, omit, split, merge, or rewrite content except to correct a clear speech-to-text error.`
+      : sourceLanguage === 'en' && targetLanguage === 'ko'
+      ? 'The source STT segments are English. Translate every segment into natural Korean subtitle language. Preserve names, numbers, technical terms, original meaning, order, and IDs. Do not summarize, invent, omit, split, merge, or rewrite content except to correct a clear speech-to-text error.'
       : 'For every supplied Korean STT segment, correct only clear Korean STT mistakes. Preserve the input order and IDs. Do not merge, omit, split, or add segments. When uncertain, retain raw Korean.',
     `Target language: ${target}.`,
     `Lecture STT segments: ${JSON.stringify(source)}`,
     `Current course: ${String(course || '').trim().slice(0, 120)}`,
     `Relevant glossary: ${JSON.stringify(relevantGlossary)}`,
     `Previous stable segments (context only, do not repeat): ${JSON.stringify(recentContext)}`,
-    'Return only JSON with a segments array. Each item must have id, correctedKorean, and translatedText. translatedText MUST be in the requested Target language.'
+    sourceLanguage === targetLanguage
+      ? `Return only JSON with a segments array. Each item must have id, correctedKorean, and translatedText. translatedText MUST be ${target} only and preserve its source segment. correctedKorean must be a non-empty compatibility copy of that subtitle.`
+      : sourceLanguage === 'en' && targetLanguage === 'ko'
+      ? 'Return only JSON with a segments array. Each item must have id, correctedKorean, and translatedText. correctedKorean and translatedText MUST be Korean only.'
+      : 'Return only JSON with a segments array. Each item must have id, correctedKorean, and translatedText. translatedText MUST be in the requested Target language.'
   ].join('\n');
   const response = await getGeminiClient().models.generateContent({ model: geminiModel, contents: prompt, config: { temperature: 0, thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 1024, responseMimeType: 'application/json', responseJsonSchema: { type: 'object', properties: { segments: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, correctedKorean: { type: 'string' }, translatedText: { type: 'string' } }, required: ['id', 'correctedKorean', 'translatedText'] } } }, required: ['segments'] } } });
   let value;
