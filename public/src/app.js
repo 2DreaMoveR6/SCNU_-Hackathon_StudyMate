@@ -535,8 +535,9 @@ function downloadRecording(recording = recordings.at(-1)) { const audioUrl = rec
 function reviewEmptyNote(recording) {
   const hasTranscript = Array.isArray(recording.originalTranscript) && recording.originalTranscript.some(item => String(item || '').trim());
   const generating = noteState.generation.status === 'generating' && noteState.generation.lectureId === recording.id;
+  const generationError = noteState.generation.status === 'error' && noteState.generation.lectureId === recording.id ? noteState.generation.error : '';
   if (generating) return smartNoteSkeleton();
-  return `<div class="state review-note-empty"><span>▤</span><strong>${ui('No Smart Note yet', 'Smart Note가 없습니다')}</strong><p>${ui('Generate a Smart Note from this lecture when you are ready. Opening this tab alone never starts an AI request.', '필요할 때 이 강의의 Smart Note를 생성하세요. 이 탭을 여는 것만으로는 AI 요청이 시작되지 않습니다.')}</p>${hasTranscript ? `<button class="button" data-review-action="generate-note" ${generating ? 'disabled' : ''}>${generating ? ui('Creating Smart Note…', 'Smart Note 생성 중…') : ui('Generate Smart Note', 'Smart Note 만들기')}</button>` : `<p class="note-error">${ui('A saved final transcript is required before a Smart Note can be generated.', 'Smart Note를 생성하려면 저장된 최종 자막이 필요합니다.')}</p>`}</div>`;
+  return `<div class="state review-note-empty"><span>▤</span><strong>${ui('No Smart Note yet', 'Smart Note가 없습니다')}</strong><p>${ui('Generate a Smart Note from this lecture when you are ready. Opening this tab alone never starts an AI request.', '필요할 때 이 강의의 Smart Note를 생성하세요. 이 탭을 여는 것만으로는 AI 요청이 시작되지 않습니다.')}</p>${generationError ? `<p class="note-error" role="alert">${esc(generationError)}</p>` : ''}${hasTranscript ? `<button class="button" data-review-action="generate-note">${ui('Generate Smart Note', 'Smart Note 만들기')}</button>` : `<p class="note-error">${ui('A saved final transcript is required before a Smart Note can be generated.', 'Smart Note를 생성하려면 저장된 최종 자막이 필요합니다.')}</p>`}</div>`;
 }
 function smartNoteSkeleton() {
   const lines = count => Array.from({ length: count }, (_, index) => `<span class="note-skeleton-line line-${(index % 3) + 1}"></span>`).join('');

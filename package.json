@@ -9,7 +9,8 @@
     "test:schedule": "node scripts/test-schedule-date.mjs",
     "test:captions": "node scripts/test-caption-state.mjs",
     "test:translation-routing": "node scripts/test-translation-routing.mjs",
-    "test:schedule-dedup": "node scripts/test-schedule-dedup.mjs"
+    "test:schedule-dedup": "node scripts/test-schedule-dedup.mjs",
+    "test:smart-note-validation": "node scripts/test-smart-note-validation.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.37.0",

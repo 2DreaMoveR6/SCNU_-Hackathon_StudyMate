@@ -187,9 +187,16 @@ function isContentLanguage(value, language) {
   if (!text) return false;
   return language === 'ko' ? /[가-힣]/.test(text) : !/[가-힣]/.test(text);
 }
+function isStandardEnglishTechnicalTerm(value) {
+  const text = String(value || '').trim();
+  return /^[A-Za-z][A-Za-z0-9]*(?:[ .+/#_-][A-Za-z0-9+/#_-]+)*$/.test(text);
+}
+function isKeywordTermLanguage(value, language) {
+  return isContentLanguage(value, language) || (language === 'ko' && isStandardEnglishTechnicalTerm(value));
+}
 function validateSmartNote(value, language) {
   if (!value || !isContentLanguage(value.title, language) || !isContentLanguage(value.summary, language)) throw Object.assign(new Error('Gemini Smart Note title or summary did not match the selected language.'), { code: 'invalid-smart-note' });
-  if (!Array.isArray(value.keywords) || !value.keywords.length || value.keywords.some(item => !item || !isContentLanguage(item.term, language) || !isContentLanguage(item.definition, language) || !isContentLanguage(item.lectureContext, language) || !isContentLanguage(item.studyTip, language))) throw Object.assign(new Error('Gemini Smart Note keyword details were incomplete.'), { code: 'invalid-smart-note' });
+  if (!Array.isArray(value.keywords) || !value.keywords.length || value.keywords.some(item => !item || !isKeywordTermLanguage(item.term, language) || !isContentLanguage(item.definition, language) || !isContentLanguage(item.lectureContext, language) || !isContentLanguage(item.studyTip, language))) throw Object.assign(new Error('Gemini Smart Note keyword details were incomplete.'), { code: 'invalid-smart-note' });
   if (!Array.isArray(value.studyTips) || !value.studyTips.length || value.studyTips.some(tip => !isContentLanguage(tip, language))) throw Object.assign(new Error('Gemini Smart Note study tips were incomplete.'), { code: 'invalid-smart-note' });
   if (!Array.isArray(value.quizzes) || value.quizzes.length < 2) throw Object.assign(new Error('Gemini Smart Note quizzes were incomplete.'), { code: 'invalid-smart-note' });
   for (const quiz of value.quizzes) {
@@ -208,7 +215,7 @@ async function generateSmartNoteWithGemini({ lecture, transcript, student, langu
   const safeGlossary = Array.isArray(glossary) ? glossary.slice(0, 12).map(item => ({ term: String(item.term || '').slice(0, 80), meaning: String(item.meaning || '').slice(0, 220) })).filter(item => item.term) : [];
   const prompt = [
     'You create a structured, transcript-grounded Smart Note for an international student.',
-    `Write every generated field in ${outputLanguage}. Do not mix languages inside a quiz.`,
+    `Write every explanatory field in ${outputLanguage}. For Korean notes, explanatory text must be Korean; a keywords[].term may preserve a standard English technical term or acronym when it is the canonical lecture term. Do not mix languages inside a quiz.`,
     'Use only the lecture transcript for claims. Do not invent examples, topics, or definitions unrelated to the transcript.',
     'Provide a concise descriptive title for the Smart Note in the selected language. For each keyword, give a concise core definition and separately explain its exact lecture context. Each study tip must name or directly use a concept from this transcript and must differ in learning activity.',
     'Create exactly two quizzes: one OX and one MC. OX has options O and X. MC has exactly four unique options in the same language; exactly one is the answer. Explanations must cite the lecture concept, not generic study advice.',
