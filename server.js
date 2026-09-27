@@ -187,6 +187,13 @@ function isContentLanguage(value, language) {
   if (!text) return false;
   return language === 'ko' ? /[가-힣]/.test(text) : !/[가-힣]/.test(text);
 }
+function isEnglishMajoritySummary(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  const englishLetters = (text.match(/[A-Za-z]/g) || []).length;
+  const koreanSyllables = (text.match(/[가-힣]/g) || []).length;
+  return englishLetters > 0 && englishLetters > koreanSyllables;
+}
 function isStandardEnglishTechnicalTerm(value) {
   const text = String(value || '').trim();
   return /^[A-Za-z][A-Za-z0-9]*(?:[ .+/#_-][A-Za-z0-9+/#_-]+)*$/.test(text);
@@ -203,7 +210,7 @@ function smartNoteValidationError(message, { stage, field, reason, index, langua
 function validateSmartNote(value, language) {
   if (!value) throw smartNoteValidationError('Gemini Smart Note title or summary did not match the selected language.', { stage: 'title-summary', field: 'note', reason: 'missing', language });
   if (!isContentLanguage(value.title, language)) throw smartNoteValidationError('Gemini Smart Note title or summary did not match the selected language.', { stage: 'title-summary', field: 'title', reason: 'expected-language', language });
-  if (!isContentLanguage(value.summary, language)) throw smartNoteValidationError('Gemini Smart Note title or summary did not match the selected language.', { stage: 'title-summary', field: 'summary', reason: 'expected-language', language });
+  if (!(language === 'en' ? isEnglishMajoritySummary(value.summary) : isContentLanguage(value.summary, language))) throw smartNoteValidationError('Gemini Smart Note title or summary did not match the selected language.', { stage: 'title-summary', field: 'summary', reason: 'expected-language', language });
   if (!Array.isArray(value.keywords) || !value.keywords.length) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'keywords', reason: 'missing', language });
   for (let index = 0; index < value.keywords.length; index += 1) {
     const item = value.keywords[index];

@@ -38,6 +38,27 @@ assert.throws(() => context.validateSmartNote(englishDefinition, 'ko'), /keyword
 const emptyTerm = koreanNote('');
 assert.throws(() => context.validateSmartNote(emptyTerm, 'ko'), /keyword details/);
 
+function englishNote(summary) {
+  return {
+    title: 'Data Structures Overview',
+    summary,
+    keywords: [{ term: 'Linked List', definition: 'A linked data structure.', lectureContext: 'The lecture compared node references.', majorExplanation: 'It is important for software design.', studyTip: 'Draw the node links.' }],
+    studyTips: ['Explain the data structure aloud.'],
+    quizzes: [
+      { type: 'OX', question: 'A linked list uses nodes.', options: ['O', 'X'], answer: 'O', explanation: 'The lecture explained node links.' },
+      { type: 'MC', question: 'What structure was discussed?', options: ['Linked list', 'Compiler', 'Browser', 'Database'], answer: 'Linked list', explanation: 'Linked lists were the lecture topic.' }
+    ]
+  };
+}
+
+assert.doesNotThrow(() => context.validateSmartNote(englishNote('This is an English summary of the lecture.'), 'en'));
+assert.doesNotThrow(() => context.validateSmartNote(englishNote('This English overview explains 자료구조 concepts.'), 'en'));
+assert.doesNotThrow(() => context.validateSmartNote(englishNote('This detailed English overview explains 연결 리스트 and node references.'), 'en'));
+assert.throws(() => context.validateSmartNote(englishNote('이 강의는 자료구조와 SQL을 다룹니다.'), 'en'), /title or summary/);
+assert.throws(() => context.validateSmartNote(englishNote('이 강의는 연결 리스트를 다룹니다.'), 'en'), /title or summary/);
+assert.throws(() => context.validateSmartNote(englishNote('1234 !@#$%^&*'), 'en'), /title or summary/);
+assert.doesNotThrow(() => context.validateSmartNote(koreanNote('JavaScript'), 'ko'));
+
 const appSource = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
 assert.match(appSource, /generationError \? `<p class="note-error" role="alert">\$\{esc\(generationError\)\}<\/p>` : ''/);
 assert.match(appSource, /<button class="button" data-review-action="generate-note">/);
