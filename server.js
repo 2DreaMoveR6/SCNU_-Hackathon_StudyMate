@@ -110,13 +110,15 @@ async function translateWithGemini({ text, targetLanguage, glossary, previousSeg
   const safeCourse = String(course || '').trim().slice(0, 120);
   const prompt = [
     'You are a real-time lecture translator for an international student.',
-    'Correct only clear Korean STT mistakes, especially a glossary term that is phonetically similar and unambiguously supported by the course context. Preserve all correct wording, sentence form, and lecture meaning. When uncertain, retain the raw Korean; do not rewrite, add explanations, facts, or examples.',
+    targetLanguage === 'ko'
+      ? 'Translate the input lecture transcript accurately into natural Korean. Correct only clear speech-to-text recognition errors. When uncertain, preserve the original meaning faithfully.'
+      : 'Correct only clear Korean STT mistakes, especially a glossary term that is phonetically similar and unambiguously supported by the course context. Preserve all correct wording, sentence form, and lecture meaning. When uncertain, retain the raw Korean; do not rewrite, add explanations, facts, or examples.',
     `Target language: ${target}.`,
-    `Korean STT final: ${text.trim()}`,
+    `Lecture transcript input: ${text.trim()}`,
     `Current course: ${safeCourse}`,
     `Relevant glossary: ${JSON.stringify(relevantGlossary)}`,
     `Previous stable segments (context only, do not repeat): ${JSON.stringify(recentContext)}`,
-    'Return only the requested JSON fields. correctedKorean must be Korean. translatedText must be the natural target-language subtitle.'
+    'Return only the requested JSON fields. correctedKorean must be Korean (either corrected input or the translated Korean if target is Korean). translatedText must be the natural target-language subtitle.'
   ].join('\n');
   const response = await getGeminiClient().models.generateContent({
     model: geminiModel,
@@ -150,13 +152,15 @@ async function translateSegmentsWithGemini({ segments, targetLanguage, glossary,
   const recentContext = Array.isArray(previousSegments) ? previousSegments.slice(-2).map(segment => String(segment || '').trim().slice(0, 240)).filter(Boolean) : [];
   const prompt = [
     'You are a real-time lecture translator for an international student.',
-    'For every supplied Korean STT segment, correct only clear Korean STT mistakes. Preserve the input order and IDs. Do not merge, omit, split, or add segments. When uncertain, retain raw Korean.',
+    targetLanguage === 'ko'
+      ? 'Translate every supplied STT segment accurately into natural Korean. Correct only clear speech-to-text recognition errors. Preserve the input order and IDs. Do not merge, omit, split, or add segments. When uncertain, retain original meaning.'
+      : 'For every supplied Korean STT segment, correct only clear Korean STT mistakes. Preserve the input order and IDs. Do not merge, omit, split, or add segments. When uncertain, retain raw Korean.',
     `Target language: ${target}.`,
-    `Korean STT segments: ${JSON.stringify(source)}`,
+    `Lecture STT segments: ${JSON.stringify(source)}`,
     `Current course: ${String(course || '').trim().slice(0, 120)}`,
     `Relevant glossary: ${JSON.stringify(relevantGlossary)}`,
     `Previous stable segments (context only, do not repeat): ${JSON.stringify(recentContext)}`,
-    'Return only JSON with a segments array. Each item must have id, correctedKorean, and translatedText.'
+    'Return only JSON with a segments array. Each item must have id, correctedKorean, and translatedText. translatedText MUST be in the requested Target language.'
   ].join('\n');
   const response = await getGeminiClient().models.generateContent({ model: geminiModel, contents: prompt, config: { temperature: 0, thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 1024, responseMimeType: 'application/json', responseJsonSchema: { type: 'object', properties: { segments: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, correctedKorean: { type: 'string' }, translatedText: { type: 'string' } }, required: ['id', 'correctedKorean', 'translatedText'] } } }, required: ['segments'] } } });
   let value;
