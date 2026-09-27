@@ -225,6 +225,86 @@ const frontendInvalidAnswer = englishNote();
 frontendInvalidAnswer.quizzes[1].answer = 'Not an option';
 assert.throws(() => frontendContext.validateSmartNotePayload(frontendPayload(frontendInvalidAnswer), 'en'), /quiz validation failed/);
 
+function smartNoteResponse(language) {
+  const note = clone(language === 'ko' ? koreanNote() : englishNote());
+  note.keyPoints = language === 'ko' ? ['강의 핵심 개념을 정리합니다.'] : ['This is a key lecture concept.'];
+  note.keySentences = language === 'ko' ? ['강의의 핵심 문장을 복습합니다.'] : ['Review this key lecture sentence.'];
+  return note;
+}
+async function generateScenario(language, responses) {
+  const generationLogs = [];
+  const geminiCalls = [];
+  const queue = responses.map(clone);
+  const generatorContext = {
+    Date,
+    console: { warn: entry => generationLogs.push(String(entry)) },
+    geminiModel: 'test-smart-note-model',
+    getGeminiClient: () => ({ models: { generateContent: async request => {
+      geminiCalls.push(request);
+      return { text: JSON.stringify(queue.shift()) };
+    } } })
+  };
+  const generatorEnd = serverSource.indexOf('async function extractSchedulesWithGemini', validatorStart);
+  vm.runInNewContext(`${serverSource.slice(validatorStart, generatorEnd)}\nglobalThis.generateSmartNoteWithGemini = generateSmartNoteWithGemini;`, generatorContext);
+  try {
+    const result = await generatorContext.generateSmartNoteWithGemini({
+      lecture: { id: 'lecture-1', title: 'Private Lecture', course: 'Private Course' },
+      transcript: ['Private transcript content'], student: { department: 'Private Department', grade: '2' }, language, glossary: []
+    });
+    return { result, error: null, geminiCalls, generationLogs };
+  } catch (error) {
+    return { result: null, error, geminiCalls, generationLogs };
+  }
+}
+
+// Output-language retry: exactly one retry occurs only for target-language prose failures.
+const englishFirstPass = await generateScenario('en', [smartNoteResponse('en')]);
+assert.ok(englishFirstPass.result);
+assert.equal(englishFirstPass.geminiCalls.length, 1);
+assert.match(englishFirstPass.geminiCalls[0].contents, /target language is English/);
+assert.match(englishFirstPass.geminiCalls[0].contents, /transcript language must never determine the output language/);
+
+const koreanFirstForEnglish = smartNoteResponse('ko');
+koreanFirstForEnglish.summary = '비공개한국어요약문입니다.';
+const englishRetrySuccess = await generateScenario('en', [koreanFirstForEnglish, smartNoteResponse('en')]);
+assert.ok(englishRetrySuccess.result);
+assert.equal(englishRetrySuccess.geminiCalls.length, 2);
+assert.match(englishRetrySuccess.geminiCalls[1].contents, /previous JSON used the wrong output language/);
+assert.deepEqual(JSON.parse(englishRetrySuccess.generationLogs.find(entry => entry.includes('smart-note-language-retry'))), { event: 'smart-note-language-retry', language: 'en', attempt: 2, retryReason: 'target-language' });
+assert.equal(englishRetrySuccess.generationLogs.join('\n').includes('비공개한국어요약문입니다.'), false, 'Generated Smart Note content must never be logged.');
+
+const englishRetryFailure = await generateScenario('en', [smartNoteResponse('ko'), smartNoteResponse('ko')]);
+assert.equal(englishRetryFailure.result, null);
+assert.equal(englishRetryFailure.error?.code, 'invalid-smart-note');
+assert.equal(englishRetryFailure.geminiCalls.length, 2);
+assert.equal(JSON.parse(englishRetryFailure.generationLogs.at(-1)).attempt, 2);
+
+const koreanFirstPass = await generateScenario('ko', [smartNoteResponse('ko')]);
+assert.ok(koreanFirstPass.result);
+assert.equal(koreanFirstPass.geminiCalls.length, 1);
+assert.match(koreanFirstPass.geminiCalls[0].contents, /target language is Korean/);
+
+const koreanRetrySuccess = await generateScenario('ko', [smartNoteResponse('en'), smartNoteResponse('ko')]);
+assert.ok(koreanRetrySuccess.result);
+assert.equal(koreanRetrySuccess.geminiCalls.length, 2);
+
+const structuralFailure = smartNoteResponse('en');
+structuralFailure.keywords = [];
+const noRetryForStructuralFailure = await generateScenario('en', [structuralFailure]);
+assert.equal(noRetryForStructuralFailure.result, null);
+assert.equal(noRetryForStructuralFailure.error?.code, 'invalid-smart-note');
+assert.equal(noRetryForStructuralFailure.geminiCalls.length, 1);
+
+const mixedRetryContract = smartNoteResponse('en');
+mixedRetryContract.summary = 'This English overview explains 자료구조 concepts.';
+mixedRetryContract.keywords[0].term = '자료구조';
+mixedRetryContract.quizzes[1].options[0] = '자료구조 (Data Structures)';
+mixedRetryContract.quizzes[1].answer = '자료구조 (Data Structures)';
+const mixedContractResult = await generateScenario('en', [mixedRetryContract]);
+assert.ok(mixedContractResult.result);
+assert.equal(mixedContractResult.geminiCalls.length, 1);
+for (const scenario of [englishFirstPass, englishRetrySuccess, englishRetryFailure, koreanFirstPass, koreanRetrySuccess, noRetryForStructuralFailure, mixedContractResult]) assert.ok(scenario.geminiCalls.length <= 2, 'A Smart Note request must make at most two Gemini calls.');
+
 const appSource = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
 assert.match(appSource, /generationError \? `<p class="note-error" role="alert">\$\{esc\(generationError\)\}<\/p>` : ''/);
 assert.match(appSource, /<button class="button" data-review-action="generate-note">/);
