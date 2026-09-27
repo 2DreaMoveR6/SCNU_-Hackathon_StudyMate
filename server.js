@@ -182,24 +182,18 @@ async function translateSegmentsWithGemini({ segments, sourceLanguage = 'ko', ta
   if (translated.some(item => !item.correctedKorean || !item.translatedText)) throw Object.assign(new Error('Gemini translation batch response is incomplete.'), { code: 'invalid-response' });
   return { segments: translated, model: geminiModel };
 }
-function isContentLanguage(value, language) {
+function isTargetLanguageDominantProse(value, language) {
   const text = String(value || '').trim();
   if (!text) return false;
-  return language === 'ko' ? /[가-힣]/.test(text) : !/[가-힣]/.test(text);
+  const koreanChunks = (text.match(/[가-힣]+/g) || []).length;
+  const englishChunks = (text.match(/[A-Za-z]+/g) || []).length;
+  return language === 'ko'
+    ? koreanChunks > 0 && koreanChunks > englishChunks
+    : englishChunks > 0 && englishChunks > koreanChunks;
 }
-function isEnglishMajoritySummary(value) {
+function isMeaningfulMixedTechnicalLabel(value) {
   const text = String(value || '').trim();
-  if (!text) return false;
-  const englishLetters = (text.match(/[A-Za-z]/g) || []).length;
-  const koreanSyllables = (text.match(/[가-힣]/g) || []).length;
-  return englishLetters > 0 && englishLetters > koreanSyllables;
-}
-function isStandardEnglishTechnicalTerm(value) {
-  const text = String(value || '').trim();
-  return /^[A-Za-z][A-Za-z0-9]*(?:[ .+/#_-][A-Za-z0-9+/#_-]+)*$/.test(text);
-}
-function isKeywordTermLanguage(value, language) {
-  return isContentLanguage(value, language) || (language === 'ko' && isStandardEnglishTechnicalTerm(value));
+  return Boolean(text) && /[A-Za-z가-힣]/.test(text);
 }
 function smartNoteValidationError(message, { stage, field, reason, index, language }) {
   const entry = { event: 'smart-note-validation-failed', stage, field, reason, language };
@@ -209,28 +203,28 @@ function smartNoteValidationError(message, { stage, field, reason, index, langua
 }
 function validateSmartNote(value, language) {
   if (!value) throw smartNoteValidationError('Gemini Smart Note title or summary did not match the selected language.', { stage: 'title-summary', field: 'note', reason: 'missing', language });
-  if (!isContentLanguage(value.title, language)) throw smartNoteValidationError('Gemini Smart Note title or summary did not match the selected language.', { stage: 'title-summary', field: 'title', reason: 'expected-language', language });
-  if (!(language === 'en' ? isEnglishMajoritySummary(value.summary) : isContentLanguage(value.summary, language))) throw smartNoteValidationError('Gemini Smart Note title or summary did not match the selected language.', { stage: 'title-summary', field: 'summary', reason: 'expected-language', language });
+  if (!isMeaningfulMixedTechnicalLabel(value.title)) throw smartNoteValidationError('Gemini Smart Note title or summary did not match the selected language.', { stage: 'title-summary', field: 'title', reason: 'meaningful-label-required', language });
+  if (!isTargetLanguageDominantProse(value.summary, language)) throw smartNoteValidationError('Gemini Smart Note title or summary did not match the selected language.', { stage: 'title-summary', field: 'summary', reason: 'target-language-not-dominant', language });
   if (!Array.isArray(value.keywords) || !value.keywords.length) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'keywords', reason: 'missing', language });
   for (let index = 0; index < value.keywords.length; index += 1) {
     const item = value.keywords[index];
     if (!item) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'keyword', reason: 'missing', index, language });
-    if (!isKeywordTermLanguage(item.term, language)) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'term', reason: 'expected-language-or-technical-term', index, language });
-    if (!isContentLanguage(item.definition, language)) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'definition', reason: 'expected-language', index, language });
-    if (!isContentLanguage(item.lectureContext, language)) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'lectureContext', reason: 'expected-language', index, language });
-    if (!isContentLanguage(item.studyTip, language)) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'studyTip', reason: 'expected-language', index, language });
+    if (!isMeaningfulMixedTechnicalLabel(item.term)) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'term', reason: 'meaningful-label-required', index, language });
+    if (!isTargetLanguageDominantProse(item.definition, language)) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'definition', reason: 'target-language-not-dominant', index, language });
+    if (!isTargetLanguageDominantProse(item.lectureContext, language)) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'lectureContext', reason: 'target-language-not-dominant', index, language });
+    if (!isTargetLanguageDominantProse(item.studyTip, language)) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'studyTip', reason: 'target-language-not-dominant', index, language });
   }
   if (!Array.isArray(value.studyTips) || !value.studyTips.length) throw smartNoteValidationError('Gemini Smart Note study tips were incomplete.', { stage: 'study-tips', field: 'studyTips', reason: 'missing', language });
   for (let index = 0; index < value.studyTips.length; index += 1) {
-    if (!isContentLanguage(value.studyTips[index], language)) throw smartNoteValidationError('Gemini Smart Note study tips were incomplete.', { stage: 'study-tips', field: 'studyTip', reason: 'expected-language', index, language });
+    if (!isTargetLanguageDominantProse(value.studyTips[index], language)) throw smartNoteValidationError('Gemini Smart Note study tips were incomplete.', { stage: 'study-tips', field: 'studyTip', reason: 'target-language-not-dominant', index, language });
   }
   if (!Array.isArray(value.quizzes) || value.quizzes.length < 2) throw smartNoteValidationError('Gemini Smart Note quizzes were incomplete.', { stage: 'quizzes', field: 'quizzes', reason: 'minimum-count', language });
   for (let index = 0; index < value.quizzes.length; index += 1) {
     const quiz = value.quizzes[index];
     const options = Array.isArray(quiz.options) ? quiz.options.map(option => String(option || '').trim()).filter(Boolean) : [];
-    if (!isContentLanguage(quiz.question, language)) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'question', reason: 'expected-language', index, language });
-    if (!isContentLanguage(quiz.explanation, language)) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'explanation', reason: 'expected-language', index, language });
-    if (quiz.type !== 'OX' && options.some(option => !isContentLanguage(option, language))) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'options', reason: 'expected-language', index, language });
+    if (!isTargetLanguageDominantProse(quiz.question, language)) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'question', reason: 'target-language-not-dominant', index, language });
+    if (!isTargetLanguageDominantProse(quiz.explanation, language)) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'explanation', reason: 'target-language-not-dominant', index, language });
+    if (quiz.type !== 'OX' && options.some(option => !isMeaningfulMixedTechnicalLabel(option))) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'options', reason: 'meaningful-label-required', index, language });
     if (options.length !== (quiz.type === 'OX' ? 2 : 4)) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'options', reason: 'invalid-count', index, language });
     if (new Set(options).size !== options.length) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'options', reason: 'duplicate', index, language });
     if (!options.includes(String(quiz.answer || '').trim())) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'answer', reason: 'not-in-options', index, language });
