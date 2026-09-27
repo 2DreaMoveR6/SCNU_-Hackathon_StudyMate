@@ -250,12 +250,95 @@ export class BrowserRecordingService extends RecordingService {
 }
 
 export class NoteGenerator { async generate() { throw new Error('Note generator is not configured.'); } }
-function hasExpectedLanguage(value, language) { const text = String(value || '').trim(); return Boolean(text) && (language === 'ko' ? /[가-힣]/.test(text) : !/[가-힣]/.test(text)); }
+function isTargetLanguageDominantProse(value, language) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  const koreanChunks = (text.match(/[가-힣]+/g) || []).length;
+  const englishChunks = (text.match(/[A-Za-z]+/g) || []).length;
+  return language === 'ko'
+    ? koreanChunks > 0 && koreanChunks > englishChunks
+    : englishChunks > 0 && englishChunks > koreanChunks;
+}
+function isMeaningfulMixedTechnicalLabel(value) {
+  const text = String(value || '').trim();
+  return Boolean(text) && /[A-Za-z가-힣]/.test(text);
+}
+function normalizedComparisonKey(value) {
+  return String(value || '').trim().normalize('NFKC').replace(/[\s\u00A0]+/gu, ' ').trim();
+}
+function limitedOptionVariationKey(value) {
+  return normalizedComparisonKey(value).toLowerCase().replace(/[.?!;:]+$/u, '');
+}
+function uniqueOptionMatch(options, key, keyForOption) {
+  const matches = options.filter(option => keyForOption(option) === key);
+  return matches.length === 1 ? matches[0] : null;
+}
+function choiceMarkerIndex(value) {
+  const marker = normalizedComparisonKey(value);
+  if (/^[A-Da-d]$/u.test(marker)) return marker.toUpperCase().charCodeAt(0) - 65;
+  if (/^[1-4]$/u.test(marker)) return Number(marker) - 1;
+  return null;
+}
+function prefixedChoice(value) {
+  const match = normalizedComparisonKey(value).match(/^([A-Da-d]|[1-4])[.)]\s+(.+)$/u);
+  if (!match) return null;
+  return { index: choiceMarkerIndex(match[1]), body: match[2] };
+}
+function optionBodyForChoice(value, index) {
+  const prefixed = prefixedChoice(value);
+  return !prefixed ? normalizedComparisonKey(value) : prefixed.index === index ? prefixed.body : null;
+}
+function resolveMcAnswer(options, answer) {
+  const answerKey = normalizedComparisonKey(answer);
+  if (!answerKey) return null;
+  const direct = uniqueOptionMatch(options, answerKey, normalizedComparisonKey);
+  if (direct) return direct;
+  const markerIndex = choiceMarkerIndex(answerKey);
+  if (markerIndex !== null) return options[markerIndex] || null;
+  const prefixed = prefixedChoice(answerKey);
+  if (prefixed && prefixed.index !== null && options[prefixed.index]) {
+    const optionBody = optionBodyForChoice(options[prefixed.index], prefixed.index);
+    if (optionBody && (prefixed.body === optionBody || limitedOptionVariationKey(prefixed.body) === limitedOptionVariationKey(optionBody))) return options[prefixed.index];
+    return null;
+  }
+  return uniqueOptionMatch(options, limitedOptionVariationKey(answerKey), limitedOptionVariationKey);
+}
+function canonicalOxValue(value) {
+  const alias = normalizedComparisonKey(value).toLowerCase();
+  if (['o', 'true', 't', '참'].includes(alias)) return 'O';
+  if (['x', 'false', 'f', '거짓'].includes(alias)) return 'X';
+  return null;
+}
+function normalizedQuizType(value) {
+  const type = normalizedComparisonKey(value).toUpperCase();
+  return type === 'OX' || type === 'MC' ? type : null;
+}
+function invalidSmartNote(message) {
+  return Object.assign(new Error(message), { code: 'invalid-smart-note' });
+}
 function validateSmartNotePayload(note, language) {
-  if (!note || !hasExpectedLanguage(note.title, language) || !hasExpectedLanguage(note.summary, language) || !Array.isArray(note.keywords) || !note.keywords.length || !Array.isArray(note.studyTips) || !note.studyTips.length || !Array.isArray(note.quizzes) || note.quizzes.length < 2) throw Object.assign(new Error('Smart Note response is incomplete.'), { code: 'invalid-smart-note' });
-  if (note.keywords.some(keyword => !keyword || !hasExpectedLanguage(keyword, language) || !note.keywordDetails?.[keyword]?.meaning || !note.keywordDetails?.[keyword]?.context || !note.keywordDetails?.[keyword]?.studyTip)) throw Object.assign(new Error('Smart Note keyword definitions are incomplete.'), { code: 'invalid-smart-note' });
-  if (note.studyTips.some(tip => !hasExpectedLanguage(tip, language))) throw Object.assign(new Error('Smart Note study tips did not match the selected language.'), { code: 'invalid-smart-note' });
-  for (const quiz of note.quizzes) { const options = Array.isArray(quiz.options) ? quiz.options : []; const languageItems = quiz.type === 'OX' ? [quiz.question, quiz.explanation] : [quiz.question, quiz.explanation, ...options]; if (!hasExpectedLanguage(quiz.question, language) || !hasExpectedLanguage(quiz.explanation, language) || !languageItems.every(item => hasExpectedLanguage(item, language)) || (quiz.type === 'OX' ? options.length !== 2 : options.length !== 4) || new Set(options).size !== options.length || !options.includes(quiz.answer)) throw Object.assign(new Error('Smart Note quiz validation failed.'), { code: 'invalid-smart-note' }); }
+  if (!note || !isMeaningfulMixedTechnicalLabel(note.title) || !isTargetLanguageDominantProse(note.summary, language) || !Array.isArray(note.keywords) || !note.keywords.length || !Array.isArray(note.studyTips) || !note.studyTips.length || !Array.isArray(note.quizzes) || note.quizzes.length < 2) throw invalidSmartNote('Smart Note response is incomplete.');
+  if (note.keywords.some(keyword => !isMeaningfulMixedTechnicalLabel(keyword) || !isTargetLanguageDominantProse(note.keywordDetails?.[keyword]?.meaning, language) || !isTargetLanguageDominantProse(note.keywordDetails?.[keyword]?.context, language) || !isTargetLanguageDominantProse(note.keywordDetails?.[keyword]?.studyTip, language))) throw invalidSmartNote('Smart Note keyword definitions are incomplete.');
+  if (note.studyTips.some(tip => !isTargetLanguageDominantProse(tip, language))) throw invalidSmartNote('Smart Note study tips did not match the selected language.');
+  for (const quiz of note.quizzes) {
+    if (!quiz || typeof quiz !== 'object') throw invalidSmartNote('Smart Note quiz validation failed.');
+    const type = normalizedQuizType(quiz.type);
+    const options = Array.isArray(quiz.options) ? quiz.options.map(option => String(option || '').trim()).filter(Boolean) : [];
+    if (!type || !isTargetLanguageDominantProse(quiz.question, language) || !isTargetLanguageDominantProse(quiz.explanation, language) || (type === 'MC' && options.some(option => !isMeaningfulMixedTechnicalLabel(option))) || options.length !== (type === 'OX' ? 2 : 4) || new Set(options).size !== options.length || new Set(options.map(normalizedComparisonKey)).size !== options.length) throw invalidSmartNote('Smart Note quiz validation failed.');
+    if (type === 'OX') {
+      const optionValues = options.map(canonicalOxValue);
+      const answer = canonicalOxValue(quiz.answer);
+      if (!optionValues.includes('O') || !optionValues.includes('X') || !answer || !optionValues.includes(answer)) throw invalidSmartNote('Smart Note quiz validation failed.');
+      quiz.type = 'OX';
+      quiz.options = ['O', 'X'];
+      quiz.answer = answer;
+    } else {
+      const answer = resolveMcAnswer(options, quiz.answer);
+      if (!answer) throw invalidSmartNote('Smart Note quiz validation failed.');
+      quiz.type = 'MC';
+      quiz.answer = answer;
+    }
+  }
 }
 export class GeminiSmartNoteGenerator extends NoteGenerator {
   constructor({ endpoint } = {}) { super(); this.endpoint = endpoint || getHttpApiUrl('/api/smart-note'); }

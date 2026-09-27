@@ -10,6 +10,13 @@ assert.ok(validatorStart >= 0 && validatorEnd > validatorStart, 'Smart Note vali
 const context = {};
 vm.runInNewContext(`${serverSource.slice(validatorStart, validatorEnd)}\nglobalThis.validateSmartNote = validateSmartNote;`, context);
 
+const frontendSource = readFileSync(new URL('../src/services/index.js', import.meta.url), 'utf8');
+const frontendValidatorStart = frontendSource.indexOf('function isTargetLanguageDominantProse');
+const frontendValidatorEnd = frontendSource.indexOf('export class GeminiSmartNoteGenerator', frontendValidatorStart);
+assert.ok(frontendValidatorStart >= 0 && frontendValidatorEnd > frontendValidatorStart, 'Frontend Smart Note validator source must be available.');
+const frontendContext = {};
+vm.runInNewContext(`${frontendSource.slice(frontendValidatorStart, frontendValidatorEnd)}\nglobalThis.validateSmartNotePayload = validateSmartNotePayload;`, frontendContext);
+
 function koreanNote(term = '연결 리스트') {
   return {
     title: '자료구조 핵심 개념',
@@ -36,6 +43,28 @@ function englishNote(summary = 'This is an English summary of the lecture.') {
   };
 }
 
+function clone(value) { return JSON.parse(JSON.stringify(value)); }
+function frontendPayload(note) {
+  return {
+    title: note.title,
+    summary: note.summary,
+    keyPoints: note.keyPoints || ['A key lecture point.'],
+    keySentences: note.keySentences || ['A key lecture sentence.'],
+    keywords: note.keywords.map(item => item.term),
+    keywordDetails: Object.fromEntries(note.keywords.map(item => [item.term, { meaning: item.definition, context: item.lectureContext, major: item.majorExplanation, studyTip: item.studyTip }])),
+    studyTips: [...note.studyTips],
+    quizzes: clone(note.quizzes)
+  };
+}
+function assertContractParity(note, language) {
+  const backendNote = clone(note);
+  context.validateSmartNote(backendNote, language);
+  const backendResponse = frontendPayload(backendNote);
+  assert.doesNotThrow(() => frontendContext.validateSmartNotePayload(backendResponse, language), 'A backend-approved Smart Note must pass frontend validation.');
+  const frontendResponse = frontendPayload(clone(note));
+  assert.doesNotThrow(() => frontendContext.validateSmartNotePayload(frontendResponse, language), 'The frontend must accept the same valid Smart Note contract.');
+}
+
 // Prose policy: selected-language chunks must be strictly dominant, with limited technical terms allowed.
 assert.doesNotThrow(() => context.validateSmartNote(englishNote(), 'en'));
 assert.doesNotThrow(() => context.validateSmartNote(englishNote('This English overview explains 자료구조 concepts.'), 'en'));
@@ -53,6 +82,21 @@ const shortKoreanNote = koreanNote('JavaScript');
 shortKoreanNote.summary = '개요';
 assert.doesNotThrow(() => context.validateSmartNote(shortKoreanNote, 'ko'));
 assert.throws(() => context.validateSmartNote(englishNote('1234 !@#$%^&*'), 'en'), /title or summary/);
+
+// Backend-approved Smart Notes must satisfy the frontend response contract as well.
+const parityEnglishTechnical = englishNote('This English overview explains 자료구조 concepts.');
+parityEnglishTechnical.keywords[0].term = '자료구조';
+assertContractParity(parityEnglishTechnical, 'en');
+const parityKoreanTechnical = koreanNote('JavaScript');
+parityKoreanTechnical.summary = '강의는 JavaScript 자료구조를 자세히 다룹니다.';
+assertContractParity(parityKoreanTechnical, 'ko');
+const parityMixedTitle = englishNote();
+parityMixedTitle.title = '자료구조 Data Structures';
+assertContractParity(parityMixedTitle, 'en');
+const parityMixedOption = englishNote();
+parityMixedOption.quizzes[1].options[0] = '자료구조 (Data Structures)';
+parityMixedOption.quizzes[1].answer = '자료구조 (Data Structures)';
+assertContractParity(parityMixedOption, 'en');
 
 // Labels may be meaningful mixed-language technical terms in either note language.
 const mixedKeyword = englishNote();
@@ -102,18 +146,30 @@ function mcAnswerNote(answer, options) {
 }
 for (const [answer, expected] of [['Linked list', 'Linked list'], ['  Linked list  ', 'Linked list'], ['Ｃｏｍｐｉｌｅｒ', 'Compiler'], ['compiler', 'Compiler'], ['Queue.', 'Queue']]) {
   const note = answer === 'Queue.' ? mcAnswerNote(answer, ['Stack', 'Queue', 'Tree', 'Graph']) : mcAnswerNote(answer);
+  const frontendNote = frontendPayload(clone(note));
+  frontendContext.validateSmartNotePayload(frontendNote, 'en');
+  assert.equal(frontendNote.quizzes[1].answer, expected);
   context.validateSmartNote(note, 'en');
   assert.equal(note.quizzes[1].answer, expected);
 }
 const nbspAnswer = mcAnswerNote('Priority\u00A0\u00A0Queue', ['Stack', 'Priority Queue', 'Tree', 'Graph']);
+const frontendNbspAnswer = frontendPayload(clone(nbspAnswer));
+frontendContext.validateSmartNotePayload(frontendNbspAnswer, 'en');
+assert.equal(frontendNbspAnswer.quizzes[1].answer, 'Priority Queue');
 context.validateSmartNote(nbspAnswer, 'en');
 assert.equal(nbspAnswer.quizzes[1].answer, 'Priority Queue');
 for (const [answer, expected] of [['A', 'Linked list'], ['B', 'Compiler'], ['C', 'Browser'], ['D', 'Database'], ['1', 'Linked list'], ['2', 'Compiler'], ['3', 'Browser'], ['4', 'Database']]) {
   const note = mcAnswerNote(answer);
+  const frontendNote = frontendPayload(clone(note));
+  frontendContext.validateSmartNotePayload(frontendNote, 'en');
+  assert.equal(frontendNote.quizzes[1].answer, expected);
   context.validateSmartNote(note, 'en');
   assert.equal(note.quizzes[1].answer, expected);
 }
 const prefixedAnswer = mcAnswerNote('B. Queue', ['Stack', 'Queue', 'Tree', 'Graph']);
+const frontendPrefixedAnswer = frontendPayload(clone(prefixedAnswer));
+frontendContext.validateSmartNotePayload(frontendPrefixedAnswer, 'en');
+assert.equal(frontendPrefixedAnswer.quizzes[1].answer, 'Queue');
 context.validateSmartNote(prefixedAnswer, 'en');
 assert.equal(prefixedAnswer.quizzes[1].answer, 'Queue');
 
@@ -121,6 +177,10 @@ assert.equal(prefixedAnswer.quizzes[1].answer, 'Queue');
 for (const [answer, expected] of [['O', 'O'], ['X', 'X'], ['True', 'O'], ['False', 'X'], ['T', 'O'], ['F', 'X'], ['참', 'O'], ['거짓', 'X']]) {
   const note = englishNote();
   note.quizzes[0].answer = answer;
+  const frontendNote = frontendPayload(clone(note));
+  frontendContext.validateSmartNotePayload(frontendNote, 'en');
+  assert.deepEqual(Array.from(frontendNote.quizzes[0].options), ['O', 'X']);
+  assert.equal(frontendNote.quizzes[0].answer, expected);
   context.validateSmartNote(note, 'en');
   assert.deepEqual(Array.from(note.quizzes[0].options), ['O', 'X']);
   assert.equal(note.quizzes[0].answer, expected);
@@ -138,6 +198,22 @@ assert.throws(() => context.validateSmartNote(unknownQuizType, 'en'), /quiz vali
 const malformedQuiz = englishNote();
 malformedQuiz.quizzes[1] = null;
 assert.throws(() => context.validateSmartNote(malformedQuiz, 'en'), /quiz validation failed/);
+
+// The frontend rejects the same malformed or wrong-language response contract as the backend.
+const frontendWrongLanguage = englishNote('이 강의는 자료구조를 다룹니다.');
+assert.throws(() => frontendContext.validateSmartNotePayload(frontendPayload(frontendWrongLanguage), 'en'), /Smart Note response is incomplete/);
+const frontendMalformed = englishNote();
+frontendMalformed.quizzes[1] = null;
+assert.throws(() => frontendContext.validateSmartNotePayload(frontendPayload(frontendMalformed), 'en'), /quiz validation failed/);
+const frontendBadCount = englishNote();
+frontendBadCount.quizzes[1].options = ['Linked list', 'Compiler', 'Browser'];
+assert.throws(() => frontendContext.validateSmartNotePayload(frontendPayload(frontendBadCount), 'en'), /quiz validation failed/);
+const frontendDuplicateOptions = englishNote();
+frontendDuplicateOptions.quizzes[1].options = ['Priority Queue', 'Priority\u00A0Queue', 'Browser', 'Database'];
+assert.throws(() => frontendContext.validateSmartNotePayload(frontendPayload(frontendDuplicateOptions), 'en'), /quiz validation failed/);
+const frontendInvalidAnswer = englishNote();
+frontendInvalidAnswer.quizzes[1].answer = 'Not an option';
+assert.throws(() => frontendContext.validateSmartNotePayload(frontendPayload(frontendInvalidAnswer), 'en'), /quiz validation failed/);
 
 const appSource = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
 assert.match(appSource, /generationError \? `<p class="note-error" role="alert">\$\{esc\(generationError\)\}<\/p>` : ''/);
