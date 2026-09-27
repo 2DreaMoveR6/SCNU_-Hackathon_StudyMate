@@ -194,16 +194,39 @@ function isStandardEnglishTechnicalTerm(value) {
 function isKeywordTermLanguage(value, language) {
   return isContentLanguage(value, language) || (language === 'ko' && isStandardEnglishTechnicalTerm(value));
 }
+function smartNoteValidationError(message, { stage, field, reason, index, language }) {
+  const entry = { event: 'smart-note-validation-failed', stage, field, reason, language };
+  if (Number.isInteger(index)) entry.index = index;
+  console.warn(JSON.stringify(entry));
+  return Object.assign(new Error(message), { code: 'invalid-smart-note' });
+}
 function validateSmartNote(value, language) {
-  if (!value || !isContentLanguage(value.title, language) || !isContentLanguage(value.summary, language)) throw Object.assign(new Error('Gemini Smart Note title or summary did not match the selected language.'), { code: 'invalid-smart-note' });
-  if (!Array.isArray(value.keywords) || !value.keywords.length || value.keywords.some(item => !item || !isKeywordTermLanguage(item.term, language) || !isContentLanguage(item.definition, language) || !isContentLanguage(item.lectureContext, language) || !isContentLanguage(item.studyTip, language))) throw Object.assign(new Error('Gemini Smart Note keyword details were incomplete.'), { code: 'invalid-smart-note' });
-  if (!Array.isArray(value.studyTips) || !value.studyTips.length || value.studyTips.some(tip => !isContentLanguage(tip, language))) throw Object.assign(new Error('Gemini Smart Note study tips were incomplete.'), { code: 'invalid-smart-note' });
-  if (!Array.isArray(value.quizzes) || value.quizzes.length < 2) throw Object.assign(new Error('Gemini Smart Note quizzes were incomplete.'), { code: 'invalid-smart-note' });
-  for (const quiz of value.quizzes) {
+  if (!value) throw smartNoteValidationError('Gemini Smart Note title or summary did not match the selected language.', { stage: 'title-summary', field: 'note', reason: 'missing', language });
+  if (!isContentLanguage(value.title, language)) throw smartNoteValidationError('Gemini Smart Note title or summary did not match the selected language.', { stage: 'title-summary', field: 'title', reason: 'expected-language', language });
+  if (!isContentLanguage(value.summary, language)) throw smartNoteValidationError('Gemini Smart Note title or summary did not match the selected language.', { stage: 'title-summary', field: 'summary', reason: 'expected-language', language });
+  if (!Array.isArray(value.keywords) || !value.keywords.length) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'keywords', reason: 'missing', language });
+  for (let index = 0; index < value.keywords.length; index += 1) {
+    const item = value.keywords[index];
+    if (!item) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'keyword', reason: 'missing', index, language });
+    if (!isKeywordTermLanguage(item.term, language)) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'term', reason: 'expected-language-or-technical-term', index, language });
+    if (!isContentLanguage(item.definition, language)) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'definition', reason: 'expected-language', index, language });
+    if (!isContentLanguage(item.lectureContext, language)) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'lectureContext', reason: 'expected-language', index, language });
+    if (!isContentLanguage(item.studyTip, language)) throw smartNoteValidationError('Gemini Smart Note keyword details were incomplete.', { stage: 'keywords', field: 'studyTip', reason: 'expected-language', index, language });
+  }
+  if (!Array.isArray(value.studyTips) || !value.studyTips.length) throw smartNoteValidationError('Gemini Smart Note study tips were incomplete.', { stage: 'study-tips', field: 'studyTips', reason: 'missing', language });
+  for (let index = 0; index < value.studyTips.length; index += 1) {
+    if (!isContentLanguage(value.studyTips[index], language)) throw smartNoteValidationError('Gemini Smart Note study tips were incomplete.', { stage: 'study-tips', field: 'studyTip', reason: 'expected-language', index, language });
+  }
+  if (!Array.isArray(value.quizzes) || value.quizzes.length < 2) throw smartNoteValidationError('Gemini Smart Note quizzes were incomplete.', { stage: 'quizzes', field: 'quizzes', reason: 'minimum-count', language });
+  for (let index = 0; index < value.quizzes.length; index += 1) {
+    const quiz = value.quizzes[index];
     const options = Array.isArray(quiz.options) ? quiz.options.map(option => String(option || '').trim()).filter(Boolean) : [];
-    const validLanguage = (quiz.type === 'OX' ? [quiz.question, quiz.explanation] : [quiz.question, quiz.explanation, ...options]).every(item => isContentLanguage(item, language));
-    const validOptions = quiz.type === 'OX' ? options.length === 2 : options.length === 4;
-    if (!validLanguage || !validOptions || new Set(options).size !== options.length || !options.includes(String(quiz.answer || '').trim())) throw Object.assign(new Error('Gemini Smart Note quiz validation failed.'), { code: 'invalid-smart-note' });
+    if (!isContentLanguage(quiz.question, language)) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'question', reason: 'expected-language', index, language });
+    if (!isContentLanguage(quiz.explanation, language)) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'explanation', reason: 'expected-language', index, language });
+    if (quiz.type !== 'OX' && options.some(option => !isContentLanguage(option, language))) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'options', reason: 'expected-language', index, language });
+    if (options.length !== (quiz.type === 'OX' ? 2 : 4)) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'options', reason: 'invalid-count', index, language });
+    if (new Set(options).size !== options.length) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'options', reason: 'duplicate', index, language });
+    if (!options.includes(String(quiz.answer || '').trim())) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'answer', reason: 'not-in-options', index, language });
   }
 }
 async function generateSmartNoteWithGemini({ lecture, transcript, student, language, glossary }) {
@@ -241,7 +264,7 @@ async function generateSmartNoteWithGemini({ lecture, transcript, student, langu
     }
   });
   let value;
-  try { value = JSON.parse(response.text); } catch (_) { throw Object.assign(new Error('Gemini returned invalid Smart Note JSON.'), { code: 'invalid-smart-note' }); }
+  try { value = JSON.parse(response.text); } catch (_) { throw smartNoteValidationError('Gemini returned invalid Smart Note JSON.', { stage: 'response-json', field: 'response', reason: 'invalid-json', language }); }
   validateSmartNote(value, language);
   const keywordDetails = Object.fromEntries(value.keywords.map(item => [item.term.trim(), { meaning: item.definition.trim(), context: item.lectureContext.trim(), major: item.majorExplanation.trim(), studyTip: item.studyTip.trim() }]));
   return { title: value.title.trim(), summary: value.summary.trim(), keyPoints: value.keyPoints.map(item => String(item).trim()).filter(Boolean).slice(0, 5), keySentences: value.keySentences.map(item => String(item).trim()).filter(Boolean).slice(0, 4), keywords: value.keywords.map(item => item.term.trim()), keywordDetails, studyTips: value.studyTips.map(item => String(item).trim()).filter(Boolean).slice(0, 3), quizzes: value.quizzes.map((item, index) => ({ id: `quiz-${Date.now()}-${index}`, type: item.type === 'OX' ? 'OX' : 'MC', question: item.question.trim(), options: item.options.map(option => option.trim()), answer: item.answer.trim(), explanation: item.explanation.trim() })), model: geminiModel, generationVersion: 2 };
