@@ -93,6 +93,52 @@ const invalidAnswer = englishNote();
 invalidAnswer.quizzes[1].answer = 'Not an option';
 assert.throws(() => context.validateSmartNote(invalidAnswer, 'en'), /quiz validation failed/);
 
+// MC answers resolve only to one real option, then retain that option's original text.
+function mcAnswerNote(answer, options) {
+  const note = englishNote();
+  note.quizzes[1].options = options || note.quizzes[1].options;
+  note.quizzes[1].answer = answer;
+  return note;
+}
+for (const [answer, expected] of [['Linked list', 'Linked list'], ['  Linked list  ', 'Linked list'], ['Ｃｏｍｐｉｌｅｒ', 'Compiler'], ['compiler', 'Compiler'], ['Queue.', 'Queue']]) {
+  const note = answer === 'Queue.' ? mcAnswerNote(answer, ['Stack', 'Queue', 'Tree', 'Graph']) : mcAnswerNote(answer);
+  context.validateSmartNote(note, 'en');
+  assert.equal(note.quizzes[1].answer, expected);
+}
+const nbspAnswer = mcAnswerNote('Priority\u00A0\u00A0Queue', ['Stack', 'Priority Queue', 'Tree', 'Graph']);
+context.validateSmartNote(nbspAnswer, 'en');
+assert.equal(nbspAnswer.quizzes[1].answer, 'Priority Queue');
+for (const [answer, expected] of [['A', 'Linked list'], ['B', 'Compiler'], ['C', 'Browser'], ['D', 'Database'], ['1', 'Linked list'], ['2', 'Compiler'], ['3', 'Browser'], ['4', 'Database']]) {
+  const note = mcAnswerNote(answer);
+  context.validateSmartNote(note, 'en');
+  assert.equal(note.quizzes[1].answer, expected);
+}
+const prefixedAnswer = mcAnswerNote('B. Queue', ['Stack', 'Queue', 'Tree', 'Graph']);
+context.validateSmartNote(prefixedAnswer, 'en');
+assert.equal(prefixedAnswer.quizzes[1].answer, 'Queue');
+
+// OX aliases canonicalize to O/X only when the two options represent both values.
+for (const [answer, expected] of [['O', 'O'], ['X', 'X'], ['True', 'O'], ['False', 'X'], ['T', 'O'], ['F', 'X'], ['참', 'O'], ['거짓', 'X']]) {
+  const note = englishNote();
+  note.quizzes[0].answer = answer;
+  context.validateSmartNote(note, 'en');
+  assert.deepEqual(Array.from(note.quizzes[0].options), ['O', 'X']);
+  assert.equal(note.quizzes[0].answer, expected);
+}
+
+// Unsafe or ambiguous answer representations, malformed quizzes, and normalized duplicates still fail.
+assert.throws(() => context.validateSmartNote(mcAnswerNote('Not an option'), 'en'), /quiz validation failed/);
+assert.throws(() => context.validateSmartNote(mcAnswerNote('QUEUE', ['Queue', 'queue', 'Browser', 'Database']), 'en'), /quiz validation failed/);
+assert.throws(() => context.validateSmartNote(mcAnswerNote('B. Stack', ['Stack', 'Queue', 'Tree', 'Graph']), 'en'), /quiz validation failed/);
+assert.throws(() => context.validateSmartNote(mcAnswerNote('E'), 'en'), /quiz validation failed/);
+assert.throws(() => context.validateSmartNote(mcAnswerNote('Priority Queue', ['Priority Queue', 'Priority\u00A0Queue', 'Browser', 'Database']), 'en'), /quiz validation failed/);
+const unknownQuizType = englishNote();
+unknownQuizType.quizzes[1].type = 'TF';
+assert.throws(() => context.validateSmartNote(unknownQuizType, 'en'), /quiz validation failed/);
+const malformedQuiz = englishNote();
+malformedQuiz.quizzes[1] = null;
+assert.throws(() => context.validateSmartNote(malformedQuiz, 'en'), /quiz validation failed/);
+
 const appSource = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
 assert.match(appSource, /generationError \? `<p class="note-error" role="alert">\$\{esc\(generationError\)\}<\/p>` : ''/);
 assert.match(appSource, /<button class="button" data-review-action="generate-note">/);

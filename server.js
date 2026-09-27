@@ -195,6 +195,56 @@ function isMeaningfulMixedTechnicalLabel(value) {
   const text = String(value || '').trim();
   return Boolean(text) && /[A-Za-z가-힣]/.test(text);
 }
+function normalizedComparisonKey(value) {
+  return String(value || '').trim().normalize('NFKC').replace(/[\s\u00A0]+/gu, ' ').trim();
+}
+function limitedOptionVariationKey(value) {
+  return normalizedComparisonKey(value).toLowerCase().replace(/[.?!;:]+$/u, '');
+}
+function uniqueOptionMatch(options, key, keyForOption) {
+  const matches = options.filter(option => keyForOption(option) === key);
+  return matches.length === 1 ? matches[0] : null;
+}
+function choiceMarkerIndex(value) {
+  const marker = normalizedComparisonKey(value);
+  if (/^[A-Da-d]$/u.test(marker)) return marker.toUpperCase().charCodeAt(0) - 65;
+  if (/^[1-4]$/u.test(marker)) return Number(marker) - 1;
+  return null;
+}
+function prefixedChoice(value) {
+  const match = normalizedComparisonKey(value).match(/^([A-Da-d]|[1-4])[.)]\s+(.+)$/u);
+  if (!match) return null;
+  return { index: choiceMarkerIndex(match[1]), body: match[2] };
+}
+function optionBodyForChoice(value, index) {
+  const prefixed = prefixedChoice(value);
+  return !prefixed ? normalizedComparisonKey(value) : prefixed.index === index ? prefixed.body : null;
+}
+function resolveMcAnswer(options, answer) {
+  const answerKey = normalizedComparisonKey(answer);
+  if (!answerKey) return null;
+  const direct = uniqueOptionMatch(options, answerKey, normalizedComparisonKey);
+  if (direct) return direct;
+  const markerIndex = choiceMarkerIndex(answerKey);
+  if (markerIndex !== null) return options[markerIndex] || null;
+  const prefixed = prefixedChoice(answerKey);
+  if (prefixed && prefixed.index !== null && options[prefixed.index]) {
+    const optionBody = optionBodyForChoice(options[prefixed.index], prefixed.index);
+    if (optionBody && (prefixed.body === optionBody || limitedOptionVariationKey(prefixed.body) === limitedOptionVariationKey(optionBody))) return options[prefixed.index];
+    return null;
+  }
+  return uniqueOptionMatch(options, limitedOptionVariationKey(answerKey), limitedOptionVariationKey);
+}
+function canonicalOxValue(value) {
+  const alias = normalizedComparisonKey(value).toLowerCase();
+  if (['o', 'true', 't', '참'].includes(alias)) return 'O';
+  if (['x', 'false', 'f', '거짓'].includes(alias)) return 'X';
+  return null;
+}
+function normalizedQuizType(value) {
+  const type = normalizedComparisonKey(value).toUpperCase();
+  return type === 'OX' || type === 'MC' ? type : null;
+}
 function smartNoteValidationError(message, { stage, field, reason, index, language }) {
   const entry = { event: 'smart-note-validation-failed', stage, field, reason, language };
   if (Number.isInteger(index)) entry.index = index;
@@ -221,13 +271,30 @@ function validateSmartNote(value, language) {
   if (!Array.isArray(value.quizzes) || value.quizzes.length < 2) throw smartNoteValidationError('Gemini Smart Note quizzes were incomplete.', { stage: 'quizzes', field: 'quizzes', reason: 'minimum-count', language });
   for (let index = 0; index < value.quizzes.length; index += 1) {
     const quiz = value.quizzes[index];
+    if (!quiz || typeof quiz !== 'object') throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'quiz', reason: 'malformed', index, language });
+    const type = normalizedQuizType(quiz.type);
+    if (!type) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'type', reason: 'unsupported', index, language });
     const options = Array.isArray(quiz.options) ? quiz.options.map(option => String(option || '').trim()).filter(Boolean) : [];
     if (!isTargetLanguageDominantProse(quiz.question, language)) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'question', reason: 'target-language-not-dominant', index, language });
     if (!isTargetLanguageDominantProse(quiz.explanation, language)) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'explanation', reason: 'target-language-not-dominant', index, language });
-    if (quiz.type !== 'OX' && options.some(option => !isMeaningfulMixedTechnicalLabel(option))) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'options', reason: 'meaningful-label-required', index, language });
-    if (options.length !== (quiz.type === 'OX' ? 2 : 4)) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'options', reason: 'invalid-count', index, language });
+    if (type === 'MC' && options.some(option => !isMeaningfulMixedTechnicalLabel(option))) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'options', reason: 'meaningful-label-required', index, language });
+    if (options.length !== (type === 'OX' ? 2 : 4)) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'options', reason: 'invalid-count', index, language });
     if (new Set(options).size !== options.length) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'options', reason: 'duplicate', index, language });
-    if (!options.includes(String(quiz.answer || '').trim())) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'answer', reason: 'not-in-options', index, language });
+    if (new Set(options.map(normalizedComparisonKey)).size !== options.length) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'options', reason: 'normalized-duplicate', index, language });
+    if (type === 'OX') {
+      const optionValues = options.map(canonicalOxValue);
+      if (!optionValues.includes('O') || !optionValues.includes('X')) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'options', reason: 'invalid-ox-options', index, language });
+      const answer = canonicalOxValue(quiz.answer);
+      if (!answer || !optionValues.includes(answer)) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'answer', reason: 'not-in-options', index, language });
+      quiz.type = 'OX';
+      quiz.options = ['O', 'X'];
+      quiz.answer = answer;
+    } else {
+      const answer = resolveMcAnswer(options, quiz.answer);
+      if (!answer) throw smartNoteValidationError('Gemini Smart Note quiz validation failed.', { stage: 'quizzes', field: 'answer', reason: 'not-in-options', index, language });
+      quiz.type = 'MC';
+      quiz.answer = answer;
+    }
   }
 }
 async function generateSmartNoteWithGemini({ lecture, transcript, student, language, glossary }) {
